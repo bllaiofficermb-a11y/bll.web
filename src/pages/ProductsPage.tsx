@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { get, ref, remove, set } from 'firebase/database'
+import { database } from '../lib/firebase'
 
 export interface Product {
   id: string
@@ -25,71 +27,7 @@ export interface Product {
   imageUrl?: string
 }
 
-const MOCK_PRODUCTS: Product[] = [
-  {
-    id: '1', sku: 'B15', name: 'ปลั๊กรางไฟ 3 หัว (3 ช่องเสียบ) ยาว 3 เมตร สวิตแยก',
-    category: 'ปลั๊กราง', cordLength: '3 เมตร', wattage: 2300, acOutlets: 3, usbPorts: 'USB-A x2', switches: 3,
-    material: '-', warranty: 5, productSize: '7x22x3', packageSize: '17.5x35.2x3.1',
-    barcode: '8859375105375', packageWeight: 0.41, cartonQty: 20, cartonSize: '56x27x22', cartonWeight: 8.86,
-    imageEmoji: '🔌', imageColor: '#e0f2fe'
-  },
-  {
-    id: '2', sku: 'B16', name: 'ปลั๊กรางไฟ 4 หัว (4 ช่องเสียบ) ยาว 3 เมตร สวิตรวม',
-    category: 'ปลั๊กราง', cordLength: '3 เมตร', wattage: 2300, acOutlets: 4, usbPorts: '-', switches: 1,
-    material: 'ABS', warranty: 5, productSize: '7x28x3', packageSize: '18x40x3.5',
-    barcode: '8859375105382', packageWeight: 0.52, cartonQty: 20, cartonSize: '60x30x24', cartonWeight: 11.2,
-    imageEmoji: '🔌', imageColor: '#fce7f3'
-  },
-  {
-    id: '3', sku: 'B20', name: 'ปลั๊กรางไฟ 5 หัว (5 ช่องเสียบ) ยาว 5 เมตร สวิตแยก',
-    category: 'ปลั๊กราง', cordLength: '5 เมตร', wattage: 2300, acOutlets: 5, usbPorts: 'USB-A x2, USB-C x1', switches: 5,
-    material: 'ABS', warranty: 5, productSize: '7x38x3', packageSize: '20x52x3.8',
-    barcode: '8859375105399', packageWeight: 0.85, cartonQty: 12, cartonSize: '62x42x28', cartonWeight: 10.8,
-    imageEmoji: '🔌', imageColor: '#dcfce7'
-  },
-  {
-    id: '4', sku: 'A10', name: 'สายต่อพ่วง 3 หัว ยาว 1.5 เมตร',
-    category: 'สายต่อพ่วง', cordLength: '1.5 เมตร', wattage: 2300, acOutlets: 3, usbPorts: '-', switches: 0,
-    material: '-', warranty: 3, productSize: '6x15x3', packageSize: '14x22x4',
-    barcode: '8859375104001', packageWeight: 0.28, cartonQty: 24, cartonSize: '50x24x18', cartonWeight: 7.2,
-    imageEmoji: '🔋', imageColor: '#fef9c3'
-  },
-  {
-    id: '5', sku: 'A12', name: 'สายต่อพ่วง 3 หัว ยาว 3 เมตร',
-    category: 'สายต่อพ่วง', cordLength: '3 เมตร', wattage: 2300, acOutlets: 3, usbPorts: '-', switches: 0,
-    material: '-', warranty: 3, productSize: '6x15x3', packageSize: '14x22x4',
-    barcode: '8859375104018', packageWeight: 0.38, cartonQty: 24, cartonSize: '50x24x18', cartonWeight: 9.5,
-    imageEmoji: '🔋', imageColor: '#ede9fe'
-  },
-  {
-    id: '6', sku: 'C05', name: 'หัวแปลงปลั๊ก 2 หัว เป็น 3 หัว (ขากลม)',
-    category: 'หัวแปลง', cordLength: '-', wattage: 1500, acOutlets: 2, usbPorts: '-', switches: 0,
-    material: 'PC', warranty: 2, productSize: '4x5x3', packageSize: '8x10x4',
-    barcode: '8859375100501', packageWeight: 0.06, cartonQty: 48, cartonSize: '40x22x14', cartonWeight: 3.2,
-    imageEmoji: '🪛', imageColor: '#ffedd5'
-  },
-  {
-    id: '7', sku: 'U01', name: 'หัวชาร์จ USB 2 ช่อง 2.4A (ปลั๊กบ้าน)',
-    category: 'หัวชาร์จ', cordLength: '-', wattage: 12, acOutlets: 0, usbPorts: 'USB-A x2 (2.4A)', switches: 0,
-    material: 'PC+ABS', warranty: 1, productSize: '4.5x2.8x2.8', packageSize: '10x6x4',
-    barcode: '8859375200019', packageWeight: 0.08, cartonQty: 60, cartonSize: '44x32x22', cartonWeight: 5.1,
-    imageEmoji: '⚡', imageColor: '#cffafe'
-  },
-  {
-    id: '8', sku: 'U05', name: 'หัวชาร์จ USB-C 20W Fast Charge',
-    category: 'หัวชาร์จ', cordLength: '-', wattage: 20, acOutlets: 0, usbPorts: 'USB-C x1 (20W PD)', switches: 0,
-    material: 'PC', warranty: 1, productSize: '4x3x3', packageSize: '10x8x5',
-    barcode: '8859375200057', packageWeight: 0.065, cartonQty: 60, cartonSize: '44x32x24', cartonWeight: 4.1,
-    imageEmoji: '⚡', imageColor: '#f0fdf4'
-  },
-  {
-    id: '9', sku: 'B30', name: 'ปลั๊กรางไฟ 6 หัว กันไฟกระชาก ยาว 3 เมตร',
-    category: 'ปลั๊กราง', cordLength: '3 เมตร', wattage: 2300, acOutlets: 6, usbPorts: 'USB-A x2, USB-C x1', switches: 6,
-    material: 'ABS', warranty: 5, productSize: '7x48x3', packageSize: '22x62x4',
-    barcode: '8859375105306', packageWeight: 1.1, cartonQty: 10, cartonSize: '64x46x22', cartonWeight: 11.5,
-    imageEmoji: '🔌', imageColor: '#fef3c7'
-  },
-]
+
 
 const CATEGORIES = ['ทั้งหมด', 'ปลั๊กราง', 'สายต่อพ่วง', 'หัวแปลง', 'หัวชาร์จ']
 const CORD_LENGTHS = ['ทั้งหมด', '1.5 เมตร', '2 เมตร', '3 เมตร', '5 เมตร', '10 เมตร', '-']
@@ -108,7 +46,9 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('ทั้งหมด')
   const [selectedCordLength, setSelectedCordLength] = useState('ทั้งหมด')
-  const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS)
+  const [products, setProducts] = useState<Product[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [currentPage, setCurrentPage] = useState(1)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null)
   const [isAddingProduct, setIsAddingProduct] = useState(false)
@@ -192,6 +132,29 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [zoomingProduct])
 
+  useEffect(() => {
+    let mounted = true
+    const fetchProducts = async () => {
+      try {
+        const snapshot = await get(ref(database, 'products'))
+        if (snapshot.exists()) {
+          const data = snapshot.val() as Record<string, Product>
+          if (mounted) {
+            setProducts(Object.values(data))
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching products:", error)
+      } finally {
+        if (mounted) {
+          setIsLoading(false)
+        }
+      }
+    }
+    fetchProducts()
+    return () => { mounted = false }
+  }, [])
+
   const filtered = useMemo(() => {
     return products.filter(p => {
       const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -202,6 +165,14 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
       return matchSearch && matchCat && matchLen
     })
   }, [products, search, selectedCategory, selectedCordLength])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, selectedCategory, selectedCordLength])
+
+  const ITEMS_PER_PAGE = 25
+  const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE)
+  const paginatedProducts = filtered.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE)
 
   const createBlankProduct = (): Product => ({
     id: `product-${Date.now()}`,
@@ -265,25 +236,36 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
     imageColor: product.imageColor.trim() || '#f8fafc'
   })
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingProduct) return
 
     const finalProduct = normalizeProduct(editingProduct)
 
-    if (isAddingProduct) {
-      setProducts(prev => [finalProduct, ...prev])
-    } else {
-      setProducts(prev => prev.map(p => p.id === finalProduct.id ? finalProduct : p))
+    try {
+      await set(ref(database, `products/${finalProduct.id}`), finalProduct)
+      if (isAddingProduct) {
+        setProducts(prev => [finalProduct, ...prev])
+      } else {
+        setProducts(prev => prev.map(p => p.id === finalProduct.id ? finalProduct : p))
+      }
+      closeProductModal()
+    } catch (error) {
+      console.error("Error saving product:", error)
+      alert("ไม่สามารถบันทึกข้อมูลได้")
     }
-
-    closeProductModal()
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deletingProduct) return
-    setProducts(prev => prev.filter(p => p.id !== deletingProduct.id))
-    setDeletingProduct(null)
+    try {
+      await remove(ref(database, `products/${deletingProduct.id}`))
+      setProducts(prev => prev.filter(p => p.id !== deletingProduct.id))
+      setDeletingProduct(null)
+    } catch (error) {
+      console.error("Error deleting product:", error)
+      alert("ไม่สามารถลบข้อมูลได้")
+    }
   }
 
   return (
@@ -307,7 +289,7 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
         <div className="products-search-bar">
           <div className="products-search-input-wrap">
             <svg className="search-icon" viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none">
-              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
             <input
               type="text"
@@ -342,8 +324,13 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
             <div style={{ fontSize: 48 }}>🔍</div>
             <p>ไม่พบสินค้าที่ค้นหา</p>
           </div>
+        ) : isLoading ? (
+          <div className="products-empty">
+            <span className="spinner" style={{ borderColor: 'var(--primary)', borderTopColor: 'transparent', width: '30px', height: '30px', marginBottom: '16px' }}></span>
+            <p>กำลังโหลดสินค้า...</p>
+          </div>
         ) : (
-          filtered.map(product => (
+          paginatedProducts.map(product => (
             <div key={product.id} className="product-card">
               {/* Admin action buttons - top right */}
               {isAdmin && (
@@ -354,8 +341,8 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
                     onClick={() => openEditProduct(product)}
                   >
                     <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" strokeWidth="2" fill="none">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                     </svg>
                     แก้ไข
                   </button>
@@ -365,8 +352,8 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
                     onClick={() => setDeletingProduct(product)}
                   >
                     <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" strokeWidth="2" fill="none">
-                      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
-                      <path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+                      <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" />
+                      <path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" />
                     </svg>
                     ลบ
                   </button>
@@ -480,6 +467,39 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
         )}
       </div>
 
+      {/* Pagination Controls */}
+      {!isLoading && totalPages > 1 && (
+        <div className="products-pagination">
+          <button 
+            className="pagination-btn"
+            disabled={currentPage === 1}
+            onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+          >
+            ก่อนหน้า
+          </button>
+          
+          <div className="pagination-numbers">
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+              <button
+                key={page}
+                className={`pagination-number ${currentPage === page ? 'active' : ''}`}
+                onClick={() => setCurrentPage(page)}
+              >
+                {page}
+              </button>
+            ))}
+          </div>
+
+          <button 
+            className="pagination-btn"
+            disabled={currentPage === totalPages}
+            onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+          >
+            ถัดไป
+          </button>
+        </div>
+      )}
+
       {/* Add/Edit Product Modal - rendered at body level via portal */}
       {editingProduct && createPortal(
         <div className="modal-overlay">
@@ -523,86 +543,86 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
               <div className="prod-edit-grid">
                 <div className="form-group">
                   <label>SKU</label>
-                  <input type="text" value={editingProduct.sku} onChange={e => setEditingProduct({...editingProduct, sku: e.target.value})} required />
+                  <input type="text" value={editingProduct.sku} onChange={e => setEditingProduct({ ...editingProduct, sku: e.target.value })} required />
                 </div>
                 <div className="form-group">
                   <label>หมวดหมู่</label>
-                  <select value={editingProduct.category} onChange={e => setEditingProduct({...editingProduct, category: e.target.value})}>
+                  <select value={editingProduct.category} onChange={e => setEditingProduct({ ...editingProduct, category: e.target.value })}>
                     {CATEGORIES.slice(1).map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
                 <div className="form-group product-name-field">
                   <label>ชื่อสินค้า</label>
-                  <input type="text" value={editingProduct.name} onChange={e => setEditingProduct({...editingProduct, name: e.target.value})} required />
+                  <input type="text" value={editingProduct.name} onChange={e => setEditingProduct({ ...editingProduct, name: e.target.value })} required />
                 </div>
                 <div className="form-group">
                   <label>ความยาวสาย</label>
                   <input
                     type="text"
                     value={editingProduct.cordLength}
-                    onChange={e => setEditingProduct({...editingProduct, cordLength: e.target.value})}
+                    onChange={e => setEditingProduct({ ...editingProduct, cordLength: e.target.value })}
                     placeholder="เช่น 1.5 เมตร, 3 เมตร หรือ -"
                   />
                 </div>
                 <div className="form-group">
                   <label>กำลังไฟ (วัตต์)</label>
-                  <input type="number" value={editingProduct.wattage} onChange={e => setEditingProduct({...editingProduct, wattage: Number(e.target.value)})} />
+                  <input type="number" value={editingProduct.wattage} onChange={e => setEditingProduct({ ...editingProduct, wattage: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>ช่องเสียบ AC</label>
-                  <input type="number" value={editingProduct.acOutlets} onChange={e => setEditingProduct({...editingProduct, acOutlets: Number(e.target.value)})} />
+                  <input type="number" value={editingProduct.acOutlets} onChange={e => setEditingProduct({ ...editingProduct, acOutlets: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>สวิตซ์</label>
-                  <input type="number" value={editingProduct.switches} onChange={e => setEditingProduct({...editingProduct, switches: Number(e.target.value)})} />
+                  <input type="number" value={editingProduct.switches} onChange={e => setEditingProduct({ ...editingProduct, switches: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>ช่อง USB</label>
-                  <input type="text" value={editingProduct.usbPorts} onChange={e => setEditingProduct({...editingProduct, usbPorts: e.target.value})} />
+                  <input type="text" value={editingProduct.usbPorts} onChange={e => setEditingProduct({ ...editingProduct, usbPorts: e.target.value })} />
                 </div>
                 <div className="form-group">
                   <label>วัสดุ</label>
-                  <input type="text" value={editingProduct.material} onChange={e => setEditingProduct({...editingProduct, material: e.target.value})} />
+                  <input type="text" value={editingProduct.material} onChange={e => setEditingProduct({ ...editingProduct, material: e.target.value })} />
                 </div>
                 <div className="form-group">
                   <label>การรับประกัน (ปี)</label>
-                  <input type="number" value={editingProduct.warranty} onChange={e => setEditingProduct({...editingProduct, warranty: Number(e.target.value)})} />
+                  <input type="number" value={editingProduct.warranty} onChange={e => setEditingProduct({ ...editingProduct, warranty: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>ขนาดสินค้า</label>
-                  <input type="text" value={editingProduct.productSize} onChange={e => setEditingProduct({...editingProduct, productSize: e.target.value})} placeholder="เช่น 7x22x3" />
+                  <input type="text" value={editingProduct.productSize} onChange={e => setEditingProduct({ ...editingProduct, productSize: e.target.value })} placeholder="เช่น 7x22x3" />
                 </div>
                 <div className="form-group">
                   <label>ขนาดแพ็กเกจ</label>
-                  <input type="text" value={editingProduct.packageSize} onChange={e => setEditingProduct({...editingProduct, packageSize: e.target.value})} placeholder="เช่น 17.5x35.2x3.1" />
+                  <input type="text" value={editingProduct.packageSize} onChange={e => setEditingProduct({ ...editingProduct, packageSize: e.target.value })} placeholder="เช่น 17.5x35.2x3.1" />
                 </div>
                 <div className="form-group">
                   <label>บาร์โค้ด</label>
-                  <input type="text" value={editingProduct.barcode} onChange={e => setEditingProduct({...editingProduct, barcode: e.target.value})} />
+                  <input type="text" value={editingProduct.barcode} onChange={e => setEditingProduct({ ...editingProduct, barcode: e.target.value })} />
                 </div>
                 <div className="form-group">
                   <label>น้ำหนักแพ็ค (kg)</label>
-                  <input type="number" step="0.001" value={editingProduct.packageWeight} onChange={e => setEditingProduct({...editingProduct, packageWeight: Number(e.target.value)})} />
+                  <input type="number" step="0.001" value={editingProduct.packageWeight} onChange={e => setEditingProduct({ ...editingProduct, packageWeight: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>จำนวนต่อลัง</label>
-                  <input type="number" value={editingProduct.cartonQty} onChange={e => setEditingProduct({...editingProduct, cartonQty: Number(e.target.value)})} />
+                  <input type="number" value={editingProduct.cartonQty} onChange={e => setEditingProduct({ ...editingProduct, cartonQty: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>ขนาดลัง</label>
-                  <input type="text" value={editingProduct.cartonSize} onChange={e => setEditingProduct({...editingProduct, cartonSize: e.target.value})} />
+                  <input type="text" value={editingProduct.cartonSize} onChange={e => setEditingProduct({ ...editingProduct, cartonSize: e.target.value })} />
                 </div>
                 <div className="form-group">
                   <label>น้ำหนักลัง</label>
-                  <input type="number" step="0.001" value={editingProduct.cartonWeight} onChange={e => setEditingProduct({...editingProduct, cartonWeight: Number(e.target.value)})} />
+                  <input type="number" step="0.001" value={editingProduct.cartonWeight} onChange={e => setEditingProduct({ ...editingProduct, cartonWeight: Number(e.target.value) })} />
                 </div>
                 <div className="form-group">
                   <label>ไอคอนสำรอง</label>
-                  <input type="text" value={editingProduct.imageEmoji} onChange={e => setEditingProduct({...editingProduct, imageEmoji: e.target.value})} />
+                  <input type="text" value={editingProduct.imageEmoji} onChange={e => setEditingProduct({ ...editingProduct, imageEmoji: e.target.value })} />
                 </div>
                 <div className="form-group">
                   <label>สีพื้นหลังรูป</label>
-                  <input type="text" value={editingProduct.imageColor} onChange={e => setEditingProduct({...editingProduct, imageColor: e.target.value})} placeholder="#f8fafc" />
+                  <input type="text" value={editingProduct.imageColor} onChange={e => setEditingProduct({ ...editingProduct, imageColor: e.target.value })} placeholder="#f8fafc" />
                 </div>
               </div>
               <div className="modal-footer">
@@ -691,7 +711,7 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
               <div style={{ fontSize: '48px', marginBottom: '16px' }}>⚠️</div>
               <h3 style={{ fontSize: '20px', marginBottom: '12px', color: '#0f172a' }}>ยืนยันการลบสินค้า</h3>
               <p style={{ color: '#64748b', marginBottom: '24px', lineHeight: '1.5' }}>
-                คุณแน่ใจหรือไม่ว่าต้องการลบ <strong>{deletingProduct.name}</strong>?<br/>
+                คุณแน่ใจหรือไม่ว่าต้องการลบ <strong>{deletingProduct.name}</strong>?<br />
                 การกระทำนี้ไม่สามารถกู้คืนได้
               </p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>

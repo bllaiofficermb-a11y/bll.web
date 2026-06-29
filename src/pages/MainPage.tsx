@@ -1,46 +1,173 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import ProductsPage from './ProductsPage'
+import { listRecentLoginAttempts, type LoginStatus } from '../lib/loginLog'
+import { listRecentActivities, recordAdminActivity, type ActivityRecord, type ActivityType } from '../lib/activityLog'
+import { get, ref, remove, set } from 'firebase/database'
+import { database, firebaseConfig } from '../lib/firebase'
+import { initializeApp, deleteApp } from 'firebase/app'
+import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth'
+import { toAuthPassword } from '../lib/seedAdmin'
 
 export interface EmployeeProfile {
   id: string
   name: string
   department: string
   startDate: string
+  permission: string
   avatarColor: string
+  email?: string
+  password?: string
   avatarUrl?: string
+  authUid?: string
 }
 
-const MOCK_EMPLOYEES: EmployeeProfile[] = [
-  { id: 'BLL001', name: 'ดั๊ม', department: 'ฝ่ายขาย (เหนือ/กทม)', startDate: '2022-01-15', avatarColor: '#FCA5A5' },
-  { id: 'BLL002', name: 'นิตย์', department: 'ฝ่ายขาย (เหนือ)', startDate: '2020-05-10', avatarColor: '#FCD34D' },
-  { id: 'BLL003', name: 'โย', department: 'ฝ่ายขาย (อีสาน)', startDate: '2021-11-20', avatarColor: '#D8B4FE' },
-  { id: 'BLL004', name: 'ต้อ', department: 'ฝ่ายขาย (อีสาน/กลาง)', startDate: '2023-08-05', avatarColor: '#7DD3FC' },
-  { id: 'BLL005', name: 'เมฆ', department: 'ฝ่ายขาย (ตะวันออก/กลาง)', startDate: '2024-02-01', avatarColor: '#86EFAC' },
-  { id: 'BLL006', name: 'นุ', department: 'ฝ่ายขาย (กลาง)', startDate: '2022-11-12', avatarColor: '#94A3B8' },
-  { id: 'BLL007', name: 'หรั่ง', department: 'ฝ่ายขาย (กทม/ปริมณฑล)', startDate: '2020-03-01', avatarColor: '#FB923C' },
-  { id: 'BLL008', name: 'บังเซ็ง', department: 'ฝ่ายขาย (ตะวันตก/ใต้)', startDate: '2023-05-22', avatarColor: '#FF3333' },
-  { id: 'BLL009', name: 'ใหญ่', department: 'ฝ่ายขาย (ใต้)', startDate: '2021-09-09', avatarColor: '#2DD4BF' },
-]
+interface GuideDoc {
+  id: string
+  title: string
+  category: string
+  fileName: string
+  fileUrl?: string
+}
+
+interface LoginAttempt {
+  id: string
+  employeeId: string
+  status: LoginStatus
+  reason: string
+  isAdmin?: boolean
+  createdAt: string
+}
 
 const DEPARTMENTS = ['ทั้งหมด', 'ฝ่ายขาย', 'บัญชี', 'HR', 'พนักงานคลัง', 'การตลาด', 'กราฟฟิก', 'IT & AI']
+const PERMISSIONS = [
+  { value: 'user', label: 'User' },
+  { value: 'editor', label: 'Editor' },
+  { value: 'manager', label: 'Manager' },
+  { value: 'admin', label: 'Admin' },
+]
+const GUIDE_CATEGORIES = ['เซลส์ / การตลาด / ดีไซเนอร์ / AI', 'ซัพพอร์ต', 'Logistic', 'บัญชี']
 
-export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
-  const [activeView, setActiveView] = useState<'menu' | 'directory' | 'products'>('menu')
-  const [employees, setEmployees] = useState<EmployeeProfile[]>(MOCK_EMPLOYEES)
+const MOCK_GUIDE_DOCS: GuideDoc[] = [
+  { id: 'guide-1', title: 'คู่มือการใช้งานระบบขายและติดตามลูกค้า', category: 'เซลส์ / การตลาด / ดีไซเนอร์ / AI', fileName: 'sales-guide.pdf' },
+  { id: 'guide-2', title: 'แนวทางการทำกราฟฟิกและอัปโหลดสื่อ', category: 'เซลส์ / การตลาด / ดีไซเนอร์ / AI', fileName: 'design-guide.pdf' },
+  { id: 'guide-3', title: 'ขั้นตอนรับแจ้งปัญหาและตอบกลับลูกค้า', category: 'ซัพพอร์ต', fileName: 'support-guide.pdf' },
+  { id: 'guide-4', title: 'การรับสินค้าและจัดส่งออเดอร์', category: 'Logistic', fileName: 'logistic-guide.pdf' },
+  { id: 'guide-5', title: 'สรุปการบันทึกบัญชีรายวัน', category: 'บัญชี', fileName: 'accounting-guide.pdf' },
+]
+
+export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boolean; currentEmployeeId?: string }) {
+  const [activeView, setActiveView] = useState<'menu' | 'directory' | 'products' | 'guide' | 'login-history'>('menu')
+  const [employees, setEmployees] = useState<EmployeeProfile[]>([])
+  const [guideDocs, setGuideDocs] = useState<GuideDoc[]>(MOCK_GUIDE_DOCS)
   const [selectedDept, setSelectedDept] = useState<string>('ทั้งหมด')
-  
+  const [selectedGuideCategory, setSelectedGuideCategory] = useState<string>(GUIDE_CATEGORIES[0])
+  const [loginAttempts, setLoginAttempts] = useState<LoginAttempt[]>([])
+  const [loginHistoryLoading, setLoginHistoryLoading] = useState(false)
+  const [loginHistoryError, setLoginHistoryError] = useState('')
+  const [activityRecords, setActivityRecords] = useState<ActivityRecord[]>([])
+
   // Edit, Add, Delete State
   const [editingEmp, setEditingEmp] = useState<EmployeeProfile | null>(null)
   const [isAdding, setIsAdding] = useState(false)
   const [deletingEmp, setDeletingEmp] = useState<EmployeeProfile | null>(null)
+  const [editingGuide, setEditingGuide] = useState<GuideDoc | null>(null)
+  const [isAddingGuide, setIsAddingGuide] = useState(false)
+  const [deletingGuide, setDeletingGuide] = useState<GuideDoc | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    get(ref(database, 'employees'))
+      .then((snapshot) => {
+        if (!mounted) return
+        const data = snapshot.exists() ? snapshot.val() : null
+        const items = data
+          ? Object.entries(data).map(([id, value]) => ({
+            id,
+            name: String((value as { name?: string }).name ?? ''),
+            department: String((value as { department?: string }).department ?? ''),
+            startDate: String((value as { startDate?: string }).startDate ?? new Date().toISOString().split('T')[0]),
+            permission: String((value as { permission?: string }).permission ?? 'user'),
+            avatarColor: String((value as { avatarColor?: string }).avatarColor ?? '#3b82f6'),
+            avatarUrl: String((value as { avatarUrl?: string }).avatarUrl ?? ''),
+            email: String((value as { email?: string }).email ?? ''),
+            password: String((value as { password?: string }).password ?? ''),
+          }))
+          : []
+        setEmployees(items)
+      })
+      .catch(() => {
+        if (!mounted) return
+        setEmployees([])
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeView !== 'login-history') return
+
+    let isMounted = true
+    setLoginHistoryLoading(true)
+    setLoginHistoryError('')
+
+    Promise.all([listRecentLoginAttempts(), listRecentActivities()])
+      .then(([loginData, activityData]) => {
+        if (!isMounted) return
+        const attempts = loginData
+          ? Object.entries(loginData).map(([id, value]) => ({
+            id,
+            employeeId: String((value as { employeeId?: string }).employeeId ?? ''),
+            status: ((value as { status?: LoginStatus }).status ?? 'failed') as LoginStatus,
+            reason: String((value as { reason?: string }).reason ?? ''),
+            isAdmin: Boolean((value as { isAdmin?: boolean }).isAdmin),
+            createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
+          }))
+          : []
+
+        attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        setLoginAttempts(attempts)
+
+        const activities = activityData
+          ? Object.entries(activityData).map(([id, value]) => ({
+            id,
+            actor: String((value as { actor?: string }).actor ?? ''),
+            type: ((value as { type?: ActivityType }).type ?? 'guide_updated') as ActivityType,
+            subject: String((value as { subject?: string }).subject ?? ''),
+            details: String((value as { details?: string }).details ?? ''),
+            createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
+          }))
+          : []
+        activities.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        setActivityRecords(activities)
+        setLoginHistoryError('')
+      })
+      .catch((error) => {
+        if (!isMounted) return
+        setLoginHistoryError(error instanceof Error ? error.message : 'โหลดประวัติ login ไม่สำเร็จ')
+      })
+      .finally(() => {
+        if (isMounted) {
+          setLoginHistoryLoading(false)
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [activeView])
 
   const openAddModal = () => {
     setEditingEmp({
-      id: `BLL0${employees.length + 1}`.slice(0, 6), // Auto generate a simple ID
+      id: `BLL${String(employees.length + 1).padStart(3, '0')}`,
       name: '',
       department: '',
       startDate: new Date().toISOString().split('T')[0],
-      avatarColor: '#3b82f6'
+      permission: 'user',
+      avatarColor: '#3b82f6',
+      email: '',
+      password: '',
     })
     setIsAdding(true)
   }
@@ -49,39 +176,341 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
     setEditingEmp(emp)
     setIsAdding(false)
   }
-  
-  const handleSave = (e: React.FormEvent) => {
+
+  const openAddGuideModal = () => {
+    setEditingGuide({
+      id: `guide-${Date.now()}`,
+      title: '',
+      category: GUIDE_CATEGORIES[0],
+      fileName: '',
+      fileUrl: ''
+    })
+    setIsAddingGuide(true)
+  }
+
+  const openEditGuideModal = (doc: GuideDoc) => {
+    setEditingGuide(doc)
+    setIsAddingGuide(false)
+  }
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingEmp) return
-    if (isAdding) {
-      setEmployees(prev => [...prev, editingEmp])
-    } else {
-      setEmployees(prev => prev.map(emp => emp.id === editingEmp.id ? editingEmp : emp))
+    const isEditing = !isAdding
+
+    try {
+      if (isAdding && editingEmp.email && editingEmp.password) {
+        // Create user in Firebase Auth without logging out current admin
+        const secondaryApp = initializeApp(firebaseConfig, 'Secondary')
+        const secondaryAuth = getAuth(secondaryApp)
+
+        try {
+          const userCredential = await createUserWithEmailAndPassword(
+            secondaryAuth,
+            editingEmp.email,
+            toAuthPassword(editingEmp.password)
+          )
+          editingEmp.authUid = userCredential.user.uid
+        } finally {
+          await secondaryAuth.signOut()
+          await deleteApp(secondaryApp)
+        }
+      }
+
+      if (isAdding) {
+        setEmployees(prev => [...prev, editingEmp])
+      } else {
+        setEmployees(prev => prev.map(emp => emp.id === editingEmp.id ? editingEmp : emp))
+      }
+
+      await set(ref(database, `employees/${editingEmp.id}`), editingEmp)
+      if (isAdmin) {
+        await recordAdminActivity({
+          actor: currentEmployeeId || 'ADMIN',
+          type: isEditing ? 'employee_updated' : 'employee_created',
+          subject: `${editingEmp.id} - ${editingEmp.name || 'ไม่ระบุชื่อ'}`,
+          details: isEditing
+            ? `อัปเดตข้อมูลพนักงาน แผนก: ${editingEmp.department || '-'}`
+            : `เพิ่มพนักงานใหม่ แผนก: ${editingEmp.department || '-'}`,
+        })
+      }
+      setEditingEmp(null)
+      setIsAdding(false)
+    } catch (error) {
+      console.error('Error saving employee:', error)
+      alert(error instanceof Error ? error.message : 'เกิดข้อผิดพลาดในการบันทึกข้อมูลพนักงาน')
     }
-    setEditingEmp(null)
-    setIsAdding(false)
+  }
+
+  const handleGuideSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingGuide) return
+
+    const finalDoc = {
+      ...editingGuide,
+      title: editingGuide.title.trim(),
+      fileName: editingGuide.fileName.trim() || 'guide-file.pdf'
+    }
+
+    setGuideDocs(prev => {
+      if (isAddingGuide) {
+        return [...prev, finalDoc]
+      }
+      return prev.map(doc => doc.id === finalDoc.id ? finalDoc : doc)
+    })
+
+    if (isAdmin) {
+      await recordAdminActivity({
+        actor: currentEmployeeId || 'ADMIN',
+        type: isAddingGuide ? 'guide_created' : 'guide_updated',
+        subject: finalDoc.title || 'ไม่ระบุหัวข้อ',
+        details: `${isAddingGuide ? 'เพิ่ม' : 'แก้ไข'}คู่มือหมวด ${finalDoc.category} | ไฟล์: ${finalDoc.fileName}`,
+      })
+    }
+
+    setEditingGuide(null)
+    setIsAddingGuide(false)
+  }
+
+  const handleGuideFileUpload = (file: File | null) => {
+    if (!file || !editingGuide) return
+    const fileUrl = URL.createObjectURL(file)
+    setEditingGuide({
+      ...editingGuide,
+      fileUrl,
+      fileName: file.name
+    })
+  }
+
+  const downloadGuide = (doc: GuideDoc) => {
+    if (doc.fileUrl) {
+      const link = document.createElement('a')
+      link.href = doc.fileUrl
+      link.download = doc.fileName || `${doc.title}.pdf`
+      link.click()
+      return
+    }
+
+    const blob = new Blob([`คู่มือ: ${doc.title}`], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = doc.fileName || `${doc.title}.txt`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const formatLoginIdentifier = (attempt: LoginAttempt) => {
+    const normalized = attempt.employeeId.trim().toLowerCase()
+    if (attempt.isAdmin || normalized === 'admin') {
+      return `${attempt.employeeId} (admin)`
+    }
+    return attempt.employeeId
   }
 
   return (
     <main className="dashboard-content">
       {activeView === 'products' ? (
         <ProductsPage isAdmin={isAdmin} onBack={() => setActiveView('menu')} />
+      ) : activeView === 'login-history' ? (
+        <div className="guide-page">
+          <div className="guide-page-header">
+            <button className="back-btn" onClick={() => setActiveView('menu')}>
+              <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none"><polyline points="15 18 9 12 15 6"></polyline></svg>
+              ย้อนกลับ
+            </button>
+            <div className="guide-page-title">
+              <h2>ดูประวัติการ login</h2>
+              <p>รายการการเข้าใช้งานที่บันทึกจาก Firebase</p>
+            </div>
+          </div>
+
+          <div className="login-history-toolbar">
+            <button
+              type="button"
+              className="guide-download-btn"
+              onClick={() => {
+                setLoginHistoryLoading(true)
+                setLoginHistoryError('')
+                listRecentLoginAttempts()
+                  .then((data) => {
+                    const attempts = data
+                      ? Object.entries(data).map(([id, value]) => ({
+                        id,
+                        employeeId: String((value as { employeeId?: string }).employeeId ?? ''),
+                        status: ((value as { status?: LoginStatus }).status ?? 'failed') as LoginStatus,
+                        reason: String((value as { reason?: string }).reason ?? ''),
+                        createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
+                      }))
+                      : []
+
+                    attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                    setLoginAttempts(attempts)
+                  })
+                  .catch((error) => {
+                    setLoginHistoryError(error instanceof Error ? error.message : 'โหลดประวัติ login ไม่สำเร็จ')
+                  })
+                  .finally(() => setLoginHistoryLoading(false))
+              }}
+            >
+              รีเฟรช
+            </button>
+          </div>
+
+          {loginHistoryLoading && <div className="products-empty">กำลังโหลดประวัติการ login...</div>}
+          {loginHistoryError && <div className="products-empty">{loginHistoryError}</div>}
+
+          {!loginHistoryLoading && !loginHistoryError && (
+            <div className="login-history-list">
+              {loginAttempts.length === 0 ? (
+                <div className="products-empty">ยังไม่มีข้อมูลประวัติ login</div>
+              ) : (
+                loginAttempts.map((attempt) => (
+                  <article key={attempt.id} className="login-history-card premium-card">
+                    <div className="login-history-main">
+                      <div className={`login-history-status ${attempt.status}`}>
+                        {attempt.status === 'success' ? 'สำเร็จ' : 'ไม่สำเร็จ'}
+                      </div>
+                      <div className="login-history-meta">
+                        <h3>{formatLoginIdentifier(attempt) || '-'}</h3>
+                        <p>{attempt.reason || 'ไม่มีรายละเอียดเพิ่มเติม'}</p>
+                      </div>
+                    </div>
+                    <div className="login-history-time">
+                      {attempt.createdAt ? new Date(attempt.createdAt).toLocaleString('th-TH') : '-'}
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          )}
+
+          <div className="guide-page-title" style={{ marginTop: '36px' }}>
+            <h2>ประวัติการแก้ไขของ admin</h2>
+            <p>บันทึกว่าผู้ดูแลคนไหนเพิ่ม แก้ไข หรือลบข้อมูลอะไร</p>
+          </div>
+
+          <div className="login-history-list">
+            {activityRecords.length === 0 ? (
+              <div className="products-empty">ยังไม่มีประวัติการแก้ไขของ admin</div>
+            ) : (
+              activityRecords.map((record) => (
+                <article key={record.id} className="login-history-card premium-card">
+                  <div className="login-history-main">
+                    <div className={`login-history-status ${record.type.includes('deleted') ? 'failed' : 'success'}`}>
+                      {record.type.includes('deleted') ? 'ลบ' : 'แก้ไข'}
+                    </div>
+                    <div className="login-history-meta">
+                      <h3>{record.subject}</h3>
+                      <p>
+                        {record.actor || 'ADMIN'} · {record.details}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="login-history-time">
+                    {record.createdAt ? new Date(record.createdAt).toLocaleString('th-TH') : '-'}
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+      ) : activeView === 'guide' ? (
+        <div className="guide-page">
+          <div className="guide-page-header">
+            <button className="back-btn" onClick={() => setActiveView('menu')}>
+              <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none"><polyline points="15 18 9 12 15 6"></polyline></svg>
+              ย้อนกลับ
+            </button>
+            <div className="guide-page-title">
+              <h2>คู่มือ</h2>
+              <p>เลือกหมวดแล้วดาวน์โหลดไฟล์คู่มือได้ทันที</p>
+            </div>
+            {isAdmin && (
+              <button className="add-emp-btn premium" onClick={openAddGuideModal}>
+                + เพิ่มคู่มือ
+              </button>
+            )}
+          </div>
+
+          <div className="guide-category-grid">
+            {GUIDE_CATEGORIES.map((category) => (
+              <button
+                key={category}
+                type="button"
+                className={`guide-category-card ${selectedGuideCategory === category ? 'active' : ''}`}
+                onClick={() => setSelectedGuideCategory(category)}
+              >
+                <strong>{category}</strong>
+              </button>
+            ))}
+          </div>
+
+          <div className="guide-doc-list">
+            {guideDocs.filter(doc => doc.category === selectedGuideCategory).map((doc) => (
+              <article key={doc.id} className="guide-doc-card premium-card">
+                <div className="guide-doc-main">
+                  <div className="guide-doc-badge">PDF</div>
+                  <div className="guide-doc-meta">
+                    <h3>{doc.title}</h3>
+                    <p>{doc.fileName}</p>
+                  </div>
+                </div>
+                <div className="guide-doc-actions">
+                  <button type="button" className="guide-download-btn" onClick={() => downloadGuide(doc)}>
+                    ดาวน์โหลด
+                  </button>
+                  {isAdmin && (
+                    <>
+                      <button type="button" className="emp-edit-btn" onClick={() => openEditGuideModal(doc)} title="แก้ไขคู่มือ">✎</button>
+                      <button type="button" className="emp-delete-btn" onClick={() => setDeletingGuide(doc)} title="ลบคู่มือ">🗑️</button>
+                    </>
+                  )}
+                </div>
+              </article>
+            ))}
+
+            {guideDocs.filter(doc => doc.category === selectedGuideCategory).length === 0 && (
+              <div className="products-empty">ยังไม่มีคู่มือในหมวดนี้</div>
+            )}
+          </div>
+        </div>
       ) : activeView === 'menu' ? (
         <div className="main-menu-container">
           <div className="main-menu-grid">
-            <div className="main-menu-card premium-card" onClick={() => setActiveView('directory')}>
-              <div className="main-menu-icon">👥</div>
-              <h3>พนักงานทั้งหมด</h3>
-              <p>ดูโปรไฟล์และข้อมูลพนักงานในระบบ</p>
-            </div>
+            {isAdmin && (
+              <div className="main-menu-card premium-card" onClick={() => setActiveView('directory')}>
+                <div className="main-menu-icon">👥</div>
+                <h3>พนักงานทั้งหมด</h3>
+                <p>ดูโปรไฟล์และข้อมูลพนักงานในระบบ</p>
+              </div>
+            )}
             <div className="main-menu-card premium-card" onClick={() => setActiveView('products')}>
               <div className="main-menu-icon">📦</div>
               <h3>รายการสินค้า</h3>
               <p>ดูข้อมูลสินค้า, สเปค และบรรจุภัณฑ์</p>
             </div>
+            <div className="main-menu-card premium-card" onClick={() => setActiveView('guide')}>
+              <div className="main-menu-icon">📘</div>
+              <h3>คู่มือ</h3>
+              <p>เปิดดูหัวข้อคู่มือและดาวน์โหลดไฟล์</p>
+            </div>
+            {isAdmin && (
+              <div className="main-menu-card premium-card" onClick={() => setActiveView('login-history')}>
+                <div className="main-menu-icon">🕘</div>
+                <h3>ดูประวัติการ login</h3>
+                <p>ตรวจสอบการเข้าใช้งานของผู้ใช้</p>
+              </div>
+            )}
             <div className="main-menu-card premium-card disabled">
-              <div className="main-menu-icon">📊</div>
-              <h3>รายงานยอดขาย</h3>
+              <div className="main-menu-icon qc-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2l2.5 5.5L20 10l-5.5 2.5L12 18l-2.5-5.5L4 10l5.5-2.5L12 2z" />
+                  <path d="M6 20h12" />
+                  <path d="M9 20v-3h6v3" />
+                </svg>
+              </div>
+              <h3>ระบบ QC</h3>
               <p>ฟีเจอร์ในอนาคต</p>
             </div>
           </div>
@@ -103,8 +532,8 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
 
           <div className="dept-filter-container">
             {DEPARTMENTS.map(dept => (
-              <button 
-                key={dept} 
+              <button
+                key={dept}
                 className={`dept-filter-btn ${selectedDept === dept ? 'active' : ''}`}
                 onClick={() => setSelectedDept(dept)}
               >
@@ -116,10 +545,10 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
           <div className="directory-grid">
             {employees.filter(emp => selectedDept === 'ทั้งหมด' || emp.department.includes(selectedDept)).map(emp => (
               <div key={emp.id} className="emp-card premium-card">
-                <div 
-                  className="emp-avatar" 
-                  style={{ 
-                    backgroundColor: emp.avatarColor, 
+                <div
+                  className="emp-avatar"
+                  style={{
+                    backgroundColor: emp.avatarColor,
                     backgroundImage: emp.avatarUrl ? `url(${emp.avatarUrl})` : 'none',
                     backgroundSize: 'cover',
                     backgroundPosition: 'center'
@@ -129,21 +558,23 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
                 </div>
                 <div className="emp-card-body">
                   <h3>{emp.name}</h3>
-                  <p className="emp-id">รหัส: <strong>{emp.id}</strong></p>
+                  <p className="emp-id">รหัสพนักงาน: <strong>{emp.id}</strong></p>
+                  <p className="emp-id">รหัสผ่าน: <strong>{emp.password || '-'}</strong></p>
                   <p className="emp-dept">แผนก: <span>{emp.department}</span></p>
+                  <p className="emp-dept">สิทธิ์: <span>{emp.permission || 'user'}</span></p>
                   <p className="emp-date">วันที่เข้าทำงาน: <span>{new Date(emp.startDate).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' })}</span></p>
                 </div>
                 {isAdmin && (
                   <div className="emp-actions">
-                    <button 
-                      className="emp-edit-btn" 
+                    <button
+                      className="emp-edit-btn"
                       onClick={() => openEditModal(emp)}
                       title="แก้ไขข้อมูล"
                     >
                       ✎
                     </button>
-                    <button 
-                      className="emp-delete-btn" 
+                    <button
+                      className="emp-delete-btn"
                       onClick={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
@@ -172,32 +603,32 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
             <form onSubmit={handleSave} className="modal-body">
               <div className="form-group">
                 <label>รูปโปรไฟล์ (อัปโหลด)</label>
-                <input 
-                  type="file" 
+                <input
+                  type="file"
                   accept="image/*"
                   onChange={e => {
                     const file = e.target.files?.[0];
                     if (file) {
                       const url = URL.createObjectURL(file);
-                      setEditingEmp({...editingEmp, avatarUrl: url});
+                      setEditingEmp({ ...editingEmp, avatarUrl: url });
                     }
                   }}
                 />
               </div>
               <div className="form-group">
                 <label>ชื่อ-นามสกุล</label>
-                <input 
-                  type="text" 
-                  value={editingEmp.name} 
-                  onChange={e => setEditingEmp({...editingEmp, name: e.target.value})}
+                <input
+                  type="text"
+                  value={editingEmp.name}
+                  onChange={e => setEditingEmp({ ...editingEmp, name: e.target.value })}
                   required
                 />
               </div>
               <div className="form-group">
                 <label>แผนก</label>
-                <select 
-                  value={editingEmp.department} 
-                  onChange={e => setEditingEmp({...editingEmp, department: e.target.value})}
+                <select
+                  value={editingEmp.department}
+                  onChange={e => setEditingEmp({ ...editingEmp, department: e.target.value })}
                   required
                 >
                   <option value="" disabled>-- เลือกแผนก --</option>
@@ -205,26 +636,58 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
                     .filter(Boolean)
                     .map(dept => (
                       <option key={dept} value={dept}>{dept}</option>
-                  ))}
+                    ))}
                 </select>
               </div>
               <div className="form-group">
                 <label>วันที่เข้าทำงาน</label>
-                <input 
-                  type="date" 
-                  value={editingEmp.startDate} 
-                  onChange={e => setEditingEmp({...editingEmp, startDate: e.target.value})}
+                <input
+                  type="date"
+                  value={editingEmp.startDate}
+                  onChange={e => setEditingEmp({ ...editingEmp, startDate: e.target.value })}
                   required
                 />
               </div>
               <div className="form-group">
                 <label>รหัสพนักงาน</label>
-                <input 
-                  type="text" 
-                  value={editingEmp.id} 
-                  onChange={e => setEditingEmp({...editingEmp, id: e.target.value})}
+                <input
+                  type="text"
+                  value={editingEmp.id}
+                  onChange={e => setEditingEmp({ ...editingEmp, id: e.target.value })}
                   required
                 />
+              </div>
+              <div className="form-group">
+                <label>อีเมล</label>
+                <input
+                  type="email"
+                  value={editingEmp.email || ''}
+                  onChange={e => setEditingEmp({ ...editingEmp, email: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>รหัสผ่าน</label>
+                <input
+                  type="text"
+                  value={editingEmp.password || ''}
+                  onChange={e => setEditingEmp({ ...editingEmp, password: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>สิทธิ์การเข้าถึง</label>
+                <select
+                  value={editingEmp.permission || 'user'}
+                  onChange={e => setEditingEmp({ ...editingEmp, permission: e.target.value })}
+                  required
+                >
+                  {PERMISSIONS.map((permission) => (
+                    <option key={permission.value} value={permission.value}>
+                      {permission.label}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="modal-footer">
                 <button type="button" className="cancel-btn" onClick={() => { setEditingEmp(null); setIsAdding(false); }}>ยกเลิก</button>
@@ -243,16 +706,25 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
               <div style={{ fontSize: '48px', marginBottom: '16px' }}>⚠️</div>
               <h3 style={{ fontSize: '20px', marginBottom: '12px', color: '#0f172a' }}>ยืนยันการลบข้อมูล</h3>
               <p style={{ color: '#64748b', marginBottom: '24px', lineHeight: '1.5' }}>
-                คุณแน่ใจหรือไม่ว่าต้องการลบพนักงาน <strong>{deletingEmp.name}</strong>?<br/>
+                คุณแน่ใจหรือไม่ว่าต้องการลบพนักงาน <strong>{deletingEmp.name}</strong>?<br />
                 การกระทำนี้ไม่สามารถกู้คืนได้
               </p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
                 <button className="cancel-btn" onClick={() => setDeletingEmp(null)}>ยกเลิก</button>
-                <button 
-                  className="save-btn" 
-                  style={{ background: '#ef4444' }} 
-                  onClick={() => {
+                <button
+                  className="save-btn"
+                  style={{ background: '#ef4444' }}
+                  onClick={async () => {
                     setEmployees(prev => prev.filter(item => item.id !== deletingEmp.id))
+                    await remove(ref(database, `employees/${deletingEmp.id}`))
+                    if (isAdmin) {
+                      await recordAdminActivity({
+                        actor: currentEmployeeId || 'ADMIN',
+                        type: 'employee_deleted',
+                        subject: `${deletingEmp.id} - ${deletingEmp.name}`,
+                        details: `ลบพนักงานออกจากระบบ แผนก: ${deletingEmp.department}`,
+                      })
+                    }
                     setDeletingEmp(null)
                   }}
                 >
@@ -263,6 +735,89 @@ export default function MainPage({ isAdmin }: { isAdmin?: boolean }) {
           </div>
         </div>
       )}
+
+      {isAdmin && editingGuide && (
+        <div className="modal-overlay">
+          <div className="modal-content premium-modal guide-modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{isAddingGuide ? 'เพิ่มคู่มือใหม่' : 'แก้ไขคู่มือ'}</h3>
+              <button className="close-btn" onClick={() => { setEditingGuide(null); setIsAddingGuide(false); }}>×</button>
+            </div>
+            <form onSubmit={handleGuideSave} className="modal-body">
+              <div className="form-group">
+                <label>หมวดหมู่</label>
+                <select
+                  value={editingGuide.category}
+                  onChange={e => setEditingGuide({ ...editingGuide, category: e.target.value })}
+                  required
+                >
+                  {GUIDE_CATEGORIES.map(category => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>หัวข้อคู่มือ</label>
+                <input
+                  type="text"
+                  value={editingGuide.title}
+                  onChange={e => setEditingGuide({ ...editingGuide, title: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>ไฟล์คู่มือ</label>
+                <input
+                  type="file"
+                  accept=".pdf,.doc,.docx,.txt"
+                  onChange={e => handleGuideFileUpload(e.target.files?.[0] ?? null)}
+                />
+                <small className="guide-file-hint">{editingGuide.fileName || 'ยังไม่ได้เลือกไฟล์'}</small>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="cancel-btn" onClick={() => { setEditingGuide(null); setIsAddingGuide(false); }}>ยกเลิก</button>
+                <button type="submit" className="save-btn">บันทึก</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && deletingGuide && (
+        <div className="modal-overlay">
+          <div className="modal-content premium-modal" style={{ maxWidth: '400px', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-body" style={{ padding: '40px 24px' }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px' }}>⚠️</div>
+              <h3 style={{ fontSize: '20px', marginBottom: '12px', color: '#0f172a' }}>ยืนยันการลบคู่มือ</h3>
+              <p style={{ color: '#64748b', marginBottom: '24px', lineHeight: '1.5' }}>
+                คุณแน่ใจหรือไม่ว่าต้องการลบ <strong>{deletingGuide.title}</strong>?
+              </p>
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                <button className="cancel-btn" onClick={() => setDeletingGuide(null)}>ยกเลิก</button>
+                <button
+                  className="save-btn"
+                  style={{ background: '#ef4444' }}
+                  onClick={async () => {
+                    setGuideDocs(prev => prev.filter(item => item.id !== deletingGuide.id))
+                    if (isAdmin) {
+                      await recordAdminActivity({
+                        actor: currentEmployeeId || 'ADMIN',
+                        type: 'guide_deleted',
+                        subject: deletingGuide.title,
+                        details: `ลบคู่มือหมวด ${deletingGuide.category} | ไฟล์: ${deletingGuide.fileName}`,
+                      })
+                    }
+                    setDeletingGuide(null)
+                  }}
+                >
+                  ลบข้อมูล
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   )
 }
