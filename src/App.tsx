@@ -112,7 +112,7 @@ export default function App() {
             <input
               type="text"
               id="employeeId"
-              placeholder="รหัสพนักงาน (พิมพ์ admin เพื่อเข้าสู่โหมดแก้ไข)"
+              placeholder="รหัสพนักงาน (เช่น 0001 เพื่อเข้าสู่ระบบ)"
               value={employeeId}
               onChange={(e) => setEmployeeId(e.target.value)}
               disabled={isLoading}
