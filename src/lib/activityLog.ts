@@ -8,6 +8,20 @@ export type ActivityType =
   | 'guide_created'
   | 'guide_updated'
   | 'guide_deleted'
+  | 'product_created'
+  | 'product_updated'
+  | 'product_deleted'
+  | 'map_rep_created'
+  | 'map_rep_updated'
+  | 'map_rep_deleted'
+  | 'map_province_updated'
+  | 'map_shop_created'
+  | 'map_shop_deleted'
+  | 'map_point_created'
+  | 'map_point_updated'
+  | 'map_point_deleted'
+  | 'map_point_moved'
+  | 'map_profile_moved'
 
 export interface ActivityRecord {
   id: string

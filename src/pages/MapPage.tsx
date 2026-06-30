@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import type { FormEvent } from 'react'
+import { get, onValue, ref, remove, set, update } from 'firebase/database'
 import { THAILAND_PATHS } from '../thailand-paths'
 import { PROVINCE_CENTERS } from '../province-centers'
+import { database } from '../lib/firebase'
+import { recordAdminActivity, type ActivityType } from '../lib/activityLog'
 import '../App.css'
 
 interface ProvinceDetails {
@@ -148,6 +151,12 @@ interface ShopPoint {
   color: string
 }
 
+interface DeleteConfirmState {
+  title: string
+  details: string[]
+  resolve: (confirmed: boolean) => void
+}
+
 const DEFAULT_POINTERS: MapPointer[] = [
   { repName: 'นิตย์', provinceId: 'cmi', anchorX: 110, anchorY: 210, labelX: -50, labelY: 205.6 },
   { repName: 'ดั๊ม', provinceId: 'nan', anchorX: 200, anchorY: 160, labelX: 398, labelY: 92.7 },
@@ -234,6 +243,74 @@ const INITIAL_SHOP_POINTS: ShopPoint[] = [
   { id: '58', x: 237, y: 963, saleName: 'ใหญ่', color: '#2DD4BF' },
   { id: '59', x: 230, y: 954, saleName: 'ใหญ่', color: '#2DD4BF' },
 ]
+
+const MAP_SALES_REPS_PATH = 'map_sales_reps'
+const MAP_PROVINCES_PATH = 'map_provinces'
+const MAP_POINTERS_PATH = 'map_pointers'
+const MAP_SHOP_POINTS_PATH = 'map_shop_points'
+const MAP_SEEDED_PATH = 'map_seeded'
+
+const saleRepKey = (name: string) =>
+  name.trim().replace(/[.#$/[\]]/g, '-').replace(/\s+/g, '-')
+
+const toSaleRepRecord = (reps: SaleRep[]) =>
+  reps.reduce<Record<string, SaleRep>>((record, rep) => {
+    record[saleRepKey(rep.name)] = rep
+    return record
+  }, {})
+
+const toPointerRecord = (pointers: MapPointer[]) =>
+  pointers.reduce<Record<string, MapPointer>>((record, pointer) => {
+    record[saleRepKey(pointer.repName)] = pointer
+    return record
+  }, {})
+
+const toShopPointRecord = (points: ShopPoint[]) =>
+  points.reduce<Record<string, ShopPoint>>((record, point) => {
+    record[point.id] = point
+    return record
+  }, {})
+
+const defaultSaleOrder = new Map(DEFAULT_SALES_REPS.map((rep, index) => [rep.name, index]))
+
+const sortSalesReps = (reps: SaleRep[]) =>
+  [...reps].sort((a, b) => {
+    const orderA = defaultSaleOrder.get(a.name) ?? 999
+    const orderB = defaultSaleOrder.get(b.name) ?? 999
+    if (orderA !== orderB) return orderA - orderB
+    return a.name.localeCompare(b.name, 'th')
+  })
+
+const sortShopPoints = (points: ShopPoint[]) =>
+  [...points].sort((a, b) => {
+    const numA = Number(a.id)
+    const numB = Number(b.id)
+    if (!Number.isNaN(numA) && !Number.isNaN(numB)) return numA - numB
+    return a.id.localeCompare(b.id)
+  })
+
+const seedMapDataIfEmpty = async () => {
+  const seededSnapshot = await get(ref(database, MAP_SEEDED_PATH))
+  if (seededSnapshot.exists()) return
+
+  const [salesSnapshot, provincesSnapshot, pointersSnapshot, pointsSnapshot] = await Promise.all([
+    get(ref(database, MAP_SALES_REPS_PATH)),
+    get(ref(database, MAP_PROVINCES_PATH)),
+    get(ref(database, MAP_POINTERS_PATH)),
+    get(ref(database, MAP_SHOP_POINTS_PATH))
+  ])
+
+  const updates: Record<string, unknown> = {}
+  if (!salesSnapshot.exists()) updates[MAP_SALES_REPS_PATH] = toSaleRepRecord(DEFAULT_SALES_REPS)
+  if (!provincesSnapshot.exists()) updates[MAP_PROVINCES_PATH] = DEFAULT_PROVINCES
+  if (!pointersSnapshot.exists()) updates[MAP_POINTERS_PATH] = toPointerRecord(DEFAULT_POINTERS)
+  if (!pointsSnapshot.exists()) updates[MAP_SHOP_POINTS_PATH] = toShopPointRecord(INITIAL_SHOP_POINTS)
+  updates[MAP_SEEDED_PATH] = true
+
+  if (Object.keys(updates).length > 0) {
+    await update(ref(database), updates)
+  }
+}
 
 const getArrowPoints = (x1: number, y1: number, x2: number, y2: number, zoomLevel: number) => {
   const angle = Math.atan2(y2 - y1, x2 - x1)
@@ -395,7 +472,7 @@ const getAvatarSvg = (name: string, color: string) => {
   }
 }
 
-export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
+export default function MapPage({ isAdmin = false, currentEmployeeId }: { isAdmin?: boolean; currentEmployeeId?: string }) {
 
   // Dynamic States for Assignments & Reps
   const [provinces, setProvinces] = useState<Record<string, ProvinceDetails>>(DEFAULT_PROVINCES)
@@ -438,6 +515,9 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
   const [activePointMode, setActivePointMode] = useState(false)
   const [editingPointId, setEditingPointId] = useState<string | null>(null)
   const [draggingPointId, setDraggingPointId] = useState<string | null>(null)
+  const [editingPointerRep, setEditingPointerRep] = useState<string | null>(null)
+  const [draggingPointerRep, setDraggingPointerRep] = useState<string | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState | null>(null)
   const [editingPointSale, setEditingPointSale] = useState(DEFAULT_SALES_REPS[0]?.name ?? '')
   const [newPointSale, setNewPointSale] = useState(DEFAULT_SALES_REPS[0]?.name ?? '')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
@@ -451,12 +531,54 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const shopPointsRef = useRef<ShopPoint[]>(shopPoints)
+  const pointersRef = useRef<MapPointer[]>(pointers)
+  const pointerMoveOriginalRef = useRef<MapPointer | null>(null)
 
   const MIN_ZOOM = 0.75
   const MAX_ZOOM = 10
   const ZOOM_STEP = 0.12
 
   const clampZoom = (value: number) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value))
+
+  const recordMapActivity = async (type: ActivityType, subject: string, details: string) => {
+    if (!isAdmin) return
+
+    try {
+      await recordAdminActivity({
+        actor: currentEmployeeId || 'ADMIN',
+        type,
+        subject,
+        details,
+      })
+    } catch (error) {
+      console.error('Unable to record map admin activity', error)
+    }
+  }
+
+  const formatMapCoordinates = (x: number, y: number) =>
+    `ละติจูด ${y.toFixed(1)} · ลองจิจูด ${x.toFixed(1)}`
+
+  const clampMapLabelPosition = (x: number, y: number) => ({
+    x: Math.max(-180, Math.min(740, x)),
+    y: Math.max(-120, Math.min(1145, y))
+  })
+
+  const confirmMapDelete = (title: string, details: string[]) => {
+    return new Promise<boolean>((resolve) => {
+      setDeleteConfirm({
+        title,
+        details: details.filter(Boolean),
+        resolve,
+      })
+    })
+  }
+
+  const closeDeleteConfirm = (confirmed: boolean) => {
+    if (!deleteConfirm) return
+    deleteConfirm.resolve(confirmed)
+    setDeleteConfirm(null)
+  }
 
   const clampPanOffset = (x: number, y: number, zoomLevel: number) => {
     if (!wrapperRef.current) return { x, y }
@@ -468,6 +590,58 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
       y: Math.max(-maxPanY, Math.min(y, maxPanY))
     }
   }
+
+  useEffect(() => {
+    shopPointsRef.current = shopPoints
+  }, [shopPoints])
+
+  useEffect(() => {
+    pointersRef.current = pointers
+  }, [pointers])
+
+  useEffect(() => {
+    seedMapDataIfEmpty().catch((error) => {
+      console.error('Unable to seed map data', error)
+    })
+
+    const salesUnsubscribe = onValue(ref(database, MAP_SALES_REPS_PATH), (snapshot) => {
+      const data = snapshot.val() as Record<string, SaleRep> | null
+      setSalesReps(data ? sortSalesReps(Object.values(data)) : [])
+    })
+
+    const provincesUnsubscribe = onValue(ref(database, MAP_PROVINCES_PATH), (snapshot) => {
+      const data = snapshot.val() as Record<string, ProvinceDetails> | null
+      setProvinces(data || {})
+    })
+
+    const pointersUnsubscribe = onValue(ref(database, MAP_POINTERS_PATH), (snapshot) => {
+      const data = snapshot.val() as Record<string, MapPointer> | null
+      setPointers(data ? Object.values(data) : [])
+    })
+
+    const pointsUnsubscribe = onValue(ref(database, MAP_SHOP_POINTS_PATH), (snapshot) => {
+      const data = snapshot.val() as Record<string, ShopPoint> | null
+      setShopPoints(data ? sortShopPoints(Object.values(data)) : [])
+    })
+
+    return () => {
+      salesUnsubscribe()
+      provincesUnsubscribe()
+      pointersUnsubscribe()
+      pointsUnsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (salesReps.length === 0) return
+    const hasManageRep = salesReps.some((rep) => rep.name === manageShopListRep)
+    const hasNewPointRep = salesReps.some((rep) => rep.name === newPointSale)
+    const hasEditingPointRep = salesReps.some((rep) => rep.name === editingPointSale)
+
+    if (!hasManageRep) setManageShopListRep(salesReps[0].name)
+    if (!hasNewPointRep) setNewPointSale(salesReps[0].name)
+    if (!hasEditingPointRep) setEditingPointSale(salesReps[0].name)
+  }, [editingPointSale, manageShopListRep, newPointSale, salesReps])
 
   const updateZoom = (nextZoom: number, focusPoint?: { x: number; y: number }) => {
     const clampedZoom = clampZoom(nextZoom)
@@ -493,29 +667,54 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
   }
 
   // Shop Handlers
-  const handleAddShop = (provinceId: string, shopName: string) => {
-    if (!shopName.trim() || !provinceId) return
+  const handleAddShop = async (provinceId: string, shopName: string) => {
+    const trimmedShopName = shopName.trim()
+    if (!isAdmin || !trimmedShopName || !provinceId) return
+    const province = provinces[provinceId]
+    if (!province) return
+    const shops = [...(province.shops || []), trimmedShopName]
+
     setProvinces(prev => ({
       ...prev,
       [provinceId]: {
-        ...prev[provinceId],
-        shops: [...(prev[provinceId].shops || []), shopName.trim()]
+        ...province,
+        shops
       }
     }))
+    await set(ref(database, `${MAP_PROVINCES_PATH}/${provinceId}/shops`), shops)
+    await recordMapActivity(
+      'map_shop_created',
+      `${province.nameTh} - ${trimmedShopName}`,
+      `เพิ่มร้านค้าในจังหวัด${province.nameTh} | ผู้ดูแล: ${province.saleName || '-'}`
+    )
   }
 
-  const handleRemoveShop = (provinceId: string, shopIndex: number) => {
-    setProvinces(prev => {
-      const p = prev[provinceId]
-      if (!p || !p.shops) return prev
-      return {
-        ...prev,
-        [provinceId]: {
-          ...p,
-          shops: p.shops.filter((_, i) => i !== shopIndex)
-        }
+  const handleRemoveShop = async (provinceId: string, shopIndex: number) => {
+    if (!isAdmin) return
+    const province = provinces[provinceId]
+    if (!province?.shops) return
+    const removedShopName = province.shops[shopIndex] || `ลำดับ ${shopIndex + 1}`
+    const confirmed = await confirmMapDelete('ร้านค้า', [
+      `ร้านค้า: ${removedShopName}`,
+      `จังหวัด: ${province.nameTh}`,
+      `ผู้ดูแล: ${province.saleName || '-'}`
+    ])
+    if (!confirmed) return
+
+    const nextShops = province.shops.filter((_, i) => i !== shopIndex)
+    setProvinces(prev => ({
+      ...prev,
+      [provinceId]: {
+        ...province,
+        shops: nextShops
       }
-    })
+    }))
+    await set(ref(database, `${MAP_PROVINCES_PATH}/${provinceId}/shops`), nextShops)
+    await recordMapActivity(
+      'map_shop_deleted',
+      `${province.nameTh} - ${removedShopName}`,
+      `ลบร้านค้าออกจากจังหวัด${province.nameTh} | ผู้ดูแล: ${province.saleName || '-'}`
+    )
   }
 
   // Dynamically calculate the center of the representative's assigned provinces
@@ -563,7 +762,7 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
   }
 
   useEffect(() => {
-    if (!isPanning && !draggingPointId) return
+    if (!isPanning && !draggingPointId && !draggingPointerRep) return
 
     const handleMove = (e: MouseEvent | TouchEvent) => {
       if (!wrapperRef.current || !containerRef.current) return
@@ -571,7 +770,19 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY
 
-      if (draggingPointId) {
+      if (draggingPointerRep) {
+        const svgElement = containerRef.current.querySelector('svg')
+        if (svgElement) {
+          const point = svgElement.createSVGPoint()
+          point.x = clientX
+          point.y = clientY
+          const svgCoords = point.matrixTransform(svgElement.getScreenCTM()!.inverse())
+          const next = clampMapLabelPosition(svgCoords.x, svgCoords.y)
+          setPointers(prev => prev.map(p =>
+            p.repName === draggingPointerRep ? { ...p, labelX: next.x, labelY: next.y } : p
+          ))
+        }
+      } else if (draggingPointId) {
         const svgElement = containerRef.current.querySelector('svg')
         if (svgElement) {
           const point = svgElement.createSVGPoint()
@@ -597,14 +808,34 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
         })
       }
 
-      if (e.cancelable && (isPanning || draggingPointId)) {
+      if (e.cancelable && (isPanning || draggingPointId || draggingPointerRep)) {
         e.preventDefault()
       }
     }
 
     const handleEnd = () => {
+      if (draggingPointId) {
+        const point = shopPointsRef.current.find((item) => item.id === draggingPointId)
+        if (point) {
+          update(ref(database, `${MAP_SHOP_POINTS_PATH}/${draggingPointId}`), {
+            x: point.x,
+            y: point.y
+          })
+            .then(() => {
+              void recordMapActivity(
+                'map_point_moved',
+                `จุดร้านค้า ${draggingPointId}`,
+                `ย้ายตำแหน่งจุดของ ${point.saleName} ไปที่ ${formatMapCoordinates(point.x, point.y)}`
+              )
+            })
+            .catch((error) => {
+              console.error('Unable to save shop point position', error)
+            })
+        }
+      }
       setIsPanning(false)
       setDraggingPointId(null)
+      setDraggingPointerRep(null)
     }
 
     window.addEventListener('mousemove', handleMove)
@@ -618,7 +849,7 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
       window.removeEventListener('touchmove', handleMove)
       window.removeEventListener('touchend', handleEnd)
     }
-  }, [isPanning, zoom, draggingPointId])
+  }, [isPanning, zoom, draggingPointId, draggingPointerRep])
 
   // Keyboard and Scroll Wheel Zoom shortcuts (for Mac and Win)
   useEffect(() => {
@@ -738,42 +969,117 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
   }, [selectedSale]);
 
 
+  const handleStartPointerMove = (repName: string) => {
+    if (!isAdmin) return
+    const pointer = pointers.find((item) => item.repName === repName)
+    if (!pointer) return
+    pointerMoveOriginalRef.current = { ...pointer }
+    setEditingPointerRep(repName)
+    setDraggingPointerRep(null)
+    setSelectedSale(repName)
+  }
+
+  const handleCancelPointerMove = () => {
+    const original = pointerMoveOriginalRef.current
+    if (original) {
+      setPointers(prev => prev.map((pointer) => (
+        pointer.repName === original.repName ? original : pointer
+      )))
+    }
+    pointerMoveOriginalRef.current = null
+    setDraggingPointerRep(null)
+    setEditingPointerRep(null)
+  }
+
+  const handleSavePointerMove = async (repName: string) => {
+    if (!isAdmin) return
+    const pointer = pointers.find((item) => item.repName === repName)
+    if (!pointer) return
+
+    const key = saleRepKey(repName)
+    await update(ref(database, `${MAP_POINTERS_PATH}/${key}`), {
+      ...pointer,
+      labelX: pointer.labelX,
+      labelY: pointer.labelY
+    })
+
+    await recordMapActivity(
+      'map_profile_moved',
+      `โปรไฟล์ ${repName}`,
+      `ย้ายตำแหน่งโปรไฟล์บนแผนที่ไปที่ ${formatMapCoordinates(pointer.labelX, pointer.labelY)}`
+    )
+
+    pointerMoveOriginalRef.current = null
+    setDraggingPointerRep(null)
+    setEditingPointerRep(null)
+  }
+
+
   // Handle Sales Rep Update
-  const handleUpdateRep = (index: number) => {
+  const handleUpdateRep = async (index: number) => {
+    if (!isAdmin) return
     const oldRep = salesReps[index]
     const newName = editingNameValue.trim()
     const newPhone = editingPhoneValue.trim()
     const newImageUrl = editingImageUrl.trim()
-    if (!newName) return
+    if (!oldRep || !newName) return
 
-    // 1. Update sales rep list
+    const oldKey = saleRepKey(oldRep.name)
+    const newKey = saleRepKey(newName)
+    const updatedRep: SaleRep = { ...oldRep, name: newName, phone: newPhone, imageUrl: newImageUrl }
+    const updates: Record<string, unknown> = {}
+    const affectedProvinceCount = Object.values(provinces).filter((province) => province.saleName === oldRep.name).length
+    const affectedPointCount = shopPoints.filter((point) => point.saleName === oldRep.name).length
+
+    updates[`${MAP_SALES_REPS_PATH}/${newKey}`] = updatedRep
+    if (oldKey !== newKey) updates[`${MAP_SALES_REPS_PATH}/${oldKey}`] = null
+
+    Object.entries(provinces).forEach(([key, province]) => {
+      if (province.saleName === oldRep.name) {
+        updates[`${MAP_PROVINCES_PATH}/${key}/saleName`] = newName
+        updates[`${MAP_PROVINCES_PATH}/${key}/color`] = updatedRep.color
+      }
+    })
+
+    shopPoints.forEach((point) => {
+      if (point.saleName === oldRep.name) {
+        updates[`${MAP_SHOP_POINTS_PATH}/${point.id}/saleName`] = newName
+        updates[`${MAP_SHOP_POINTS_PATH}/${point.id}/color`] = updatedRep.color
+      }
+    })
+
+    const pointer = pointers.find((item) => item.repName === oldRep.name)
+    if (pointer) {
+      updates[`${MAP_POINTERS_PATH}/${newKey}`] = { ...pointer, repName: newName }
+      if (oldKey !== newKey) updates[`${MAP_POINTERS_PATH}/${oldKey}`] = null
+    }
+
+    await update(ref(database), updates)
+
     const updatedReps = [...salesReps]
-    updatedReps[index] = { ...oldRep, name: newName, phone: newPhone, imageUrl: newImageUrl }
+    updatedReps[index] = updatedRep
     setSalesReps(updatedReps)
 
-    // 2. Update assignments inside provinces map
     const updatedProvinces = { ...provinces }
     Object.keys(updatedProvinces).forEach((key) => {
       if (updatedProvinces[key].saleName === oldRep.name) {
         updatedProvinces[key].saleName = newName
+        updatedProvinces[key].color = updatedRep.color
       }
     })
     setProvinces(updatedProvinces)
 
-    // 3. Update filter state if it was selected
     if (selectedSale === oldRep.name) {
       setSelectedSale(newName)
     }
 
-    // 4. Update shop points
     setShopPoints(prev => prev.map(p => {
       if (p.saleName === oldRep.name) {
-        return { ...p, saleName: newName }
+        return { ...p, saleName: newName, color: updatedRep.color }
       }
       return p
     }))
 
-    // 5. Update name in pointers
     setPointers(prev => prev.map(p => {
       if (p.repName === oldRep.name) {
         return { ...p, repName: newName }
@@ -781,13 +1087,50 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
       return p
     }))
 
+    await recordMapActivity(
+      'map_rep_updated',
+      `${oldRep.name} → ${newName}`,
+      `แก้ไขข้อมูลเซลล์ | เบอร์: ${newPhone || '-'} | จังหวัดที่เกี่ยวข้อง: ${affectedProvinceCount} | จุดร้านค้า: ${affectedPointCount}`
+    )
+
     setEditingRepIndex(null)
   }
 
   // Handle Delete Sales Representative
-  const handleDeleteRep = (index: number) => {
+  const handleDeleteRep = async (index: number) => {
+    if (!isAdmin) return
     const repToDelete = salesReps[index]
     if (!repToDelete) return
+
+    const repKey = saleRepKey(repToDelete.name)
+    const affectedProvinceCount = Object.values(provinces).filter((province) => province.saleName === repToDelete.name).length
+    const removedPointCount = shopPoints.filter((point) => point.saleName === repToDelete.name).length
+    const confirmed = await confirmMapDelete('เซลล์', [
+      `เซลล์: ${repToDelete.name}`,
+      `จังหวัดที่จะถูกปลดผู้ดูแล: ${affectedProvinceCount} จังหวัด`,
+      `จุดร้านค้าที่จะถูกลบตามไปด้วย: ${removedPointCount} จุด`
+    ])
+    if (!confirmed) return
+
+    const updates: Record<string, unknown> = {
+      [`${MAP_SALES_REPS_PATH}/${repKey}`]: null,
+      [`${MAP_POINTERS_PATH}/${repKey}`]: null
+    }
+
+    Object.entries(provinces).forEach(([key, province]) => {
+      if (province.saleName === repToDelete.name) {
+        updates[`${MAP_PROVINCES_PATH}/${key}/saleName`] = 'ไม่มีผู้รับผิดชอบ'
+        updates[`${MAP_PROVINCES_PATH}/${key}/color`] = '#e2e8f0'
+      }
+    })
+
+    shopPoints.forEach((point) => {
+      if (point.saleName === repToDelete.name) {
+        updates[`${MAP_SHOP_POINTS_PATH}/${point.id}`] = null
+      }
+    })
+
+    await update(ref(database), updates)
 
     if (selectedSale === repToDelete.name) {
       setSelectedSale(null)
@@ -795,11 +1138,19 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
 
     setPointers(prev => prev.filter(p => p.repName !== repToDelete.name))
     setSalesReps((prev) => prev.filter((_, idx) => idx !== index))
+    setShopPoints((prev) => prev.filter((point) => point.saleName !== repToDelete.name))
+
+    await recordMapActivity(
+      'map_rep_deleted',
+      repToDelete.name,
+      `ลบเซลล์ออกจากแผนที่ | จังหวัดที่ถูกปลด: ${affectedProvinceCount} | จุดร้านค้าที่ถูกลบ: ${removedPointCount}`
+    )
   }
 
   // Handle Add Sales Representative
-  const handleAddRep = (e: FormEvent) => {
+  const handleAddRep = async (e: FormEvent) => {
     e.preventDefault()
+    if (!isAdmin) return
     const nameInput = newRepName.trim()
     const phoneInput = newRepPhone.trim()
     if (!nameInput) return
@@ -831,8 +1182,20 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
       labelY: 480
     }
 
+    const key = saleRepKey(nameInput)
+    await update(ref(database), {
+      [`${MAP_SALES_REPS_PATH}/${key}`]: newRep,
+      [`${MAP_POINTERS_PATH}/${key}`]: newPointer
+    })
+
     setSalesReps([...salesReps, newRep])
     setPointers([...pointers, newPointer])
+    await recordMapActivity(
+      'map_rep_created',
+      newRep.name,
+      `เพิ่มเซลล์ใหม่ในแผนที่ | เบอร์: ${newRep.phone} | สี: ${newRep.color}`
+    )
+
     setNewRepName('')
     setNewRepPhone('')
     setIsAddRepOpen(false)
@@ -840,29 +1203,37 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
 
 
 
-  const handleAddPoint = (svgX: number, svgY: number) => {
+  const handleAddPoint = async (svgX: number, svgY: number) => {
+    if (!isAdmin) return
     const sale = salesReps.find((rep) => rep.name === newPointSale)
     const color = sale?.color ?? '#64748b'
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const point: ShopPoint = {
+      id,
+      x: svgX,
+      y: svgY,
+      saleName: newPointSale,
+      color
+    }
 
-    setShopPoints((prev) => [
-      ...prev,
-      {
-        id,
-        x: svgX,
-        y: svgY,
-        saleName: newPointSale,
-        color
-      }
-    ])
+    await set(ref(database, `${MAP_SHOP_POINTS_PATH}/${id}`), point)
+    setShopPoints((prev) => [...prev, point])
+    await recordMapActivity(
+      'map_point_created',
+      `จุดร้านค้า ${id}`,
+      `เพิ่มจุดร้านค้าของ ${newPointSale} ที่ ${formatMapCoordinates(svgX, svgY)}`
+    )
 
     setActivePointMode(false)
   }
 
-  const handleUpdatePoint = (id: string, saleName: string) => {
+  const handleUpdatePoint = async (id: string, saleName: string) => {
+    if (!isAdmin) return
+    const oldPoint = shopPoints.find((point) => point.id === id)
     const sale = salesReps.find((rep) => rep.name === saleName)
     const color = sale?.color ?? '#64748b'
 
+    await update(ref(database, `${MAP_SHOP_POINTS_PATH}/${id}`), { saleName, color })
     setShopPoints((prev) => prev.map((point) => {
       if (point.id !== id) return point
       return {
@@ -871,11 +1242,31 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
         color
       }
     }))
+    await recordMapActivity(
+      'map_point_updated',
+      `จุดร้านค้า ${id}`,
+      `เปลี่ยนผู้ดูแลจุดร้านค้า จาก ${oldPoint?.saleName || '-'} เป็น ${saleName}`
+    )
     setEditingPointId(null)
   }
 
-  const handleDeletePoint = (id: string) => {
+  const handleDeletePoint = async (id: string) => {
+    if (!isAdmin) return
+    const deletedPoint = shopPoints.find((point) => point.id === id)
+    const confirmed = await confirmMapDelete('จุดร้านค้า', [
+      `รหัสจุด: ${id}`,
+      `ผู้ดูแล: ${deletedPoint?.saleName || '-'}`,
+      deletedPoint ? `ตำแหน่ง: ${formatMapCoordinates(deletedPoint.x, deletedPoint.y)}` : ''
+    ])
+    if (!confirmed) return
+
+    await remove(ref(database, `${MAP_SHOP_POINTS_PATH}/${id}`))
     setShopPoints((prev) => prev.filter((point) => point.id !== id))
+    await recordMapActivity(
+      'map_point_deleted',
+      `จุดร้านค้า ${id}`,
+      `ลบจุดร้านค้าของ ${deletedPoint?.saleName || '-'}${deletedPoint ? ` | ${formatMapCoordinates(deletedPoint.x, deletedPoint.y)}` : ''}`
+    )
     if (editingPointId === id) {
       setEditingPointId(null)
     }
@@ -1254,28 +1645,91 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
                                               <span className="sl-province-count-pill">{assignedProvincesCount} จังหวัด</span>
                                               {isSelected && <span className="sl-active-pill">กำลังดู</span>}
                                             </div>
-                                            <div className="sl-rep-card-actions premium">
-                                              <button
-                                                type="button"
-                                                className="sl-icon-btn"
-                                                title="แก้ไข"
-                                                onClick={() => {
-                                                  setEditingRepIndex(idx)
-                                                  setEditingNameValue(rep.name)
-                                                  setEditingPhoneValue(rep.phone || '')
-                                                  setEditingImageUrl(rep.imageUrl || '')
+                                            <div
+                                              className="sl-rep-card-actions premium"
+                                              style={{
+                                                display: 'flex',
+                                                flexDirection: 'column',
+                                                alignItems: 'stretch',
+                                                gap: '8px',
+                                                minWidth: '160px'
+                                              }}
+                                            >
+                                              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                                                <button
+                                                  type="button"
+                                                  className="sl-icon-btn"
+                                                  title="แก้ไข"
+                                                  onClick={() => {
+                                                    setEditingRepIndex(idx)
+                                                    setEditingNameValue(rep.name)
+                                                    setEditingPhoneValue(rep.phone || '')
+                                                    setEditingImageUrl(rep.imageUrl || '')
+                                                  }}
+                                                >
+                                                  ✎
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="sl-icon-btn delete"
+                                                  title="ลบ"
+                                                  onClick={() => handleDeleteRep(idx)}
+                                                >
+                                                  ×
+                                                </button>
+                                              </div>
+
+                                              <div
+                                                style={{
+                                                  width: '100%',
+                                                  padding: editingPointerRep === rep.name ? '10px' : '0',
+                                                  borderRadius: '14px',
+                                                  border: editingPointerRep === rep.name ? `1px solid ${rep.color}44` : 'none',
+                                                  background: editingPointerRep === rep.name ? '#f8fafc' : 'transparent'
                                                 }}
                                               >
-                                                ✎
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className="sl-icon-btn delete"
-                                                title="ลบ"
-                                                onClick={() => handleDeleteRep(idx)}
-                                              >
-                                                ×
-                                              </button>
+                                                {editingPointerRep === rep.name ? (
+                                                  <>
+                                                    <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5, marginBottom: '8px' }}>
+                                                      ลากโปรไฟล์บนแผนที่ไปตำแหน่งใหม่
+                                                      <br />
+                                                      <span style={{ color: rep.color, fontWeight: 700 }}>
+                                                        {formatMapCoordinates(
+                                                          pointers.find((item) => item.repName === rep.name)?.labelX || 0,
+                                                          pointers.find((item) => item.repName === rep.name)?.labelY || 0
+                                                        )}
+                                                      </span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                                      <button
+                                                        type="button"
+                                                        className="sale-rep-action-btn save-btn"
+                                                        style={{ flex: 1, padding: '0.5rem 0.75rem', fontSize: '12px' }}
+                                                        onClick={() => handleSavePointerMove(rep.name)}
+                                                      >
+                                                        บันทึก
+                                                      </button>
+                                                      <button
+                                                        type="button"
+                                                        className="sale-rep-action-btn cancel-btn"
+                                                        style={{ flex: 1, padding: '0.5rem 0.75rem', fontSize: '12px' }}
+                                                        onClick={handleCancelPointerMove}
+                                                      >
+                                                        ยกเลิก
+                                                      </button>
+                                                    </div>
+                                                  </>
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    className="sale-rep-action-btn edit-btn"
+                                                    style={{ width: '100%', padding: '0.55rem 0.75rem', fontSize: '12px' }}
+                                                    onClick={() => handleStartPointerMove(rep.name)}
+                                                  >
+                                                    แก้ไขการย้าย
+                                                  </button>
+                                                )}
+                                              </div>
                                             </div>
                                           </div>
                                         )}
@@ -1724,7 +2178,7 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
                   style={{
                     transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`,
                     transformOrigin: 'top left',
-                    transition: isPanning ? 'none' : 'transform 0.15s ease-out'
+                    transition: isPanning || draggingPointId || draggingPointerRep ? 'none' : 'transform 0.15s ease-out'
                   }}
                 >
                   <svg viewBox="0 0 560 1025" className="thailand-detailed-svg">
@@ -1918,12 +2372,25 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
                             left: '0',
                             top: '0',
                             transform: 'translate(-50%, -50%)',
-                            cursor: 'default',
+                            cursor: editingPointerRep === rep.name ? (draggingPointerRep === rep.name ? 'grabbing' : 'grab') : 'default',
                             ['--rep-color' as any]: rep.color,
                             pointerEvents: 'auto'
                           }}
                           onClick={(e) => {
                             e.stopPropagation()
+                          }}
+                          onMouseDown={(e) => {
+                            if (editingPointerRep === rep.name && e.button === 0) {
+                              e.stopPropagation()
+                              e.preventDefault()
+                              setDraggingPointerRep(rep.name)
+                            }
+                          }}
+                          onTouchStart={(e) => {
+                            if (editingPointerRep === rep.name) {
+                              e.stopPropagation()
+                              setDraggingPointerRep(rep.name)
+                            }
                           }}
                         >
                           <div className="rep-map-avatar-container" style={{ ['--rep-color' as any]: rep.color }}>
@@ -1964,22 +2431,34 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
                   </div>
                 )}
 
-                {isAdmin && selectedProvinceId && (
+                {isAdmin && selectedProvinceId && provinces[selectedProvinceId] && (
                   <div className="province-edit-card" onClick={(e) => e.stopPropagation()}>
                     <h4>จัดการจังหวัด: {provinces[selectedProvinceId].nameTh}</h4>
                     <label>เซลล์ผู้ดูแล:</label>
                     <select
                       value={provinces[selectedProvinceId].saleName}
-                      onChange={(e) => {
-                        const newSale = e.target.value;
+                      onChange={async (e) => {
+                        const newSale = e.target.value
+                        const oldProvince = provinces[selectedProvinceId]
+                        const oldSale = oldProvince?.saleName || '-'
+                        const newColor = salesReps.find(r => r.name === newSale)?.color || '#e2e8f0'
                         setProvinces(prev => ({
                           ...prev,
                           [selectedProvinceId]: {
                             ...prev[selectedProvinceId],
                             saleName: newSale,
-                            color: salesReps.find(r => r.name === newSale)?.color || '#e2e8f0'
+                            color: newColor
                           }
                         }))
+                        await update(ref(database, `${MAP_PROVINCES_PATH}/${selectedProvinceId}`), {
+                          saleName: newSale,
+                          color: newColor
+                        })
+                        await recordMapActivity(
+                          'map_province_updated',
+                          oldProvince?.nameTh || selectedProvinceId,
+                          `เปลี่ยนผู้ดูแลจังหวัด จาก ${oldSale} เป็น ${newSale}`
+                        )
                       }}
                       className="prov-select"
                       style={{ marginTop: '0.5rem', marginBottom: '1rem' }}
@@ -2052,6 +2531,91 @@ export default function MapPage({ isAdmin = false }: { isAdmin?: boolean }) {
                 </div>
               </div>
             </div>
+
+            {deleteConfirm && (
+              <div
+                className="map-delete-modal-backdrop"
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  background: 'rgba(15, 23, 42, 0.55)',
+                  backdropFilter: 'blur(6px)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 9999,
+                  padding: '20px'
+                }}
+                onClick={() => closeDeleteConfirm(false)}
+              >
+                <div
+                  className="map-delete-modal"
+                  style={{
+                    width: 'min(440px, 100%)',
+                    background: '#ffffff',
+                    borderRadius: '24px',
+                    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
+                    overflow: 'hidden',
+                    border: '1px solid rgba(226, 232, 240, 0.9)'
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div style={{ padding: '22px 24px 18px', background: 'linear-gradient(135deg, #fff7ed 0%, #ffffff 58%)' }}>
+                    <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+                      <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#fee2e2', color: '#dc2626', display: 'grid', placeItems: 'center', fontSize: '24px', fontWeight: 800 }}>
+                        !
+                      </div>
+                      <div>
+                        <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#ef4444', fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase' }}>ยืนยันก่อนลบ</p>
+                        <h3 style={{ margin: 0, color: '#0f172a', fontSize: '20px', lineHeight: 1.35 }}>ลบ{deleteConfirm.title}นี้จริงไหม?</h3>
+                        <p style={{ margin: '8px 0 0', color: '#64748b', fontSize: '13px', lineHeight: 1.6 }}>การลบจะถูกเขียนลง Firebase และบันทึกในประวัติการแก้ไขของ admin</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '0 24px 20px' }}>
+                    <div style={{ border: '1px solid #e2e8f0', borderRadius: '16px', overflow: 'hidden', background: '#f8fafc' }}>
+                      {deleteConfirm.details.map((detail, index) => (
+                        <div
+                          key={`${detail}-${index}`}
+                          style={{
+                            padding: '11px 14px',
+                            color: '#334155',
+                            fontSize: '13px',
+                            lineHeight: 1.5,
+                            borderTop: index === 0 ? 'none' : '1px solid #e2e8f0',
+                            display: 'flex',
+                            gap: '8px'
+                          }}
+                        >
+                          <span style={{ color: '#ef4444', fontWeight: 800 }}>•</span>
+                          <span>{detail}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '18px' }}>
+                      <button
+                        type="button"
+                        className="sale-rep-action-btn cancel-btn"
+                        style={{ padding: '0.65rem 1rem' }}
+                        onClick={() => closeDeleteConfirm(false)}
+                      >
+                        ยกเลิก
+                      </button>
+                      <button
+                        type="button"
+                        className="sale-rep-action-btn delete-btn"
+                        style={{ padding: '0.65rem 1rem', background: '#dc2626', color: '#ffffff', borderColor: '#dc2626' }}
+                        onClick={() => closeDeleteConfirm(true)}
+                      >
+                        ยืนยันลบ
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </main>
   )
 }
