@@ -6078,3 +6078,120 @@
   cursor: not-allowed;
   background: var(--bg-color);
 }
+
+/* Loading Screen */
+.auth-loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 9999;
+}
+
+.loading-icon-large {
+  width: 64px;
+  height: 64px;
+  color: var(--primary);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Date Filter UI */
+.login-history-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.date-filter-wrapper {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: white;
+  padding: 6px 6px 6px 16px;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  border: 1px solid #e2e8f0;
+  transition: all 0.2s ease;
+}
+.date-filter-wrapper:focus-within {
+  border-color: #0ea5e9;
+  box-shadow: 0 4px 16px rgba(14, 165, 233, 0.1);
+}
+
+.date-filter-label {
+  font-size: 14px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.date-filter-input {
+  border: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 15px;
+  color: #334155;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 500;
+}
+.date-filter-input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.6;
+  transition: 0.2s;
+}
+.date-filter-input::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+.date-filter-btn {
+  background: #0ea5e9;
+  color: white;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.date-filter-btn:hover {
+  background: #0284c7;
+  transform: translateY(-1px);
+}
+.date-filter-btn:active {
+  transform: translateY(0);
+}
+
+.date-filter-refresh {
+  background: white;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+.date-filter-refresh:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #334155;
+}

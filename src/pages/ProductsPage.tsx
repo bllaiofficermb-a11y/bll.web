@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { get, ref, remove, set } from 'firebase/database'
+import { ref, remove, set, onValue } from 'firebase/database'
 import { database } from '../lib/firebase'
 
 export interface Product {
@@ -134,25 +134,27 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
 
   useEffect(() => {
     let mounted = true
-    const fetchProducts = async () => {
-      try {
-        const snapshot = await get(ref(database, 'products'))
-        if (snapshot.exists()) {
-          const data = snapshot.val() as Record<string, Product>
-          if (mounted) {
-            setProducts(Object.values(data))
-          }
-        }
-      } catch (error) {
-        console.error("Error fetching products:", error)
-      } finally {
-        if (mounted) {
-          setIsLoading(false)
-        }
+    const productsRef = ref(database, 'products')
+    
+    const unsubscribe = onValue(productsRef, (snapshot) => {
+      if (!mounted) return
+      if (snapshot.exists()) {
+        const data = snapshot.val() as Record<string, Product>
+        setProducts(Object.values(data))
+      } else {
+        setProducts([])
       }
+      setIsLoading(false)
+    }, (error) => {
+      if (!mounted) return
+      console.error("Error fetching products:", error)
+      setIsLoading(false)
+    })
+    
+    return () => {
+      mounted = false
+      unsubscribe()
     }
-    fetchProducts()
-    return () => { mounted = false }
   }, [])
 
   const filtered = useMemo(() => {
@@ -726,4 +728,3 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
     </div>
   )
 }
-

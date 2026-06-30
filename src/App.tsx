@@ -5,21 +5,23 @@ import MainPage from './pages/MainPage'
 import MapPage from './pages/MapPage'
 import { recordLoginAttempt } from './lib/loginLog'
 import { toAuthPassword } from './lib/seedAdmin'
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth'
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth'
 import { get, ref, set } from 'firebase/database'
 import { auth, database } from './lib/firebase'
 
 const departmentOptions = ['ฝ่ายขาย', 'บัญชี', 'HR', 'พนักงานคลัง', 'การตลาด', 'กราฟฟิก', 'IT & AI']
 
 export default function App() {
-  const [employeeId, setEmployeeId] = useState('')
+  const savedEmpId = localStorage.getItem('bll_last_employee_id')
+  const [employeeId, setEmployeeId] = useState(savedEmpId || '')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const [toastMessage, setToastMessage] = useState('')
   const [toastType, setToastType] = useState<'success' | 'error' | ''>('')
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [isLoggedIn, setIsLoggedIn] = useState(!!savedEmpId)
+  const [isAuthLoading, setIsAuthLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
   const [isRegisterAdminOpen, setIsRegisterAdminOpen] = useState(false)
   const [registerAdminLoading, setRegisterAdminLoading] = useState(false)
@@ -45,6 +47,83 @@ export default function App() {
 
     return () => window.clearTimeout(timer)
   }, [toastType])
+
+  useEffect(() => {
+    let logoutTimer: number | null = null;
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user && user.email) {
+        const loginTimeStr = localStorage.getItem('bll_login_timestamp');
+        let isValidSession = true;
+        const FOUR_HOURS = 4 * 60 * 60 * 1000;
+        
+        if (loginTimeStr) {
+          const loginTime = parseInt(loginTimeStr, 10);
+          const timeElapsed = Date.now() - loginTime;
+          if (timeElapsed >= FOUR_HOURS) {
+            isValidSession = false;
+          } else {
+            const remaining = FOUR_HOURS - timeElapsed;
+            logoutTimer = window.setTimeout(() => {
+              void signOut(auth);
+              setIsLoggedIn(false);
+              showToast('เซสชันหมดอายุ (4 ชม.) กรุณาล็อกอินใหม่', 'error');
+            }, remaining);
+          }
+        } else {
+          localStorage.setItem('bll_login_timestamp', Date.now().toString());
+          logoutTimer = window.setTimeout(() => {
+            void signOut(auth);
+            setIsLoggedIn(false);
+            showToast('เซสชันหมดอายุ (4 ชม.) กรุณาล็อกอินใหม่', 'error');
+          }, FOUR_HOURS);
+        }
+
+        if (!isValidSession) {
+          void signOut(auth);
+          setIsLoggedIn(false);
+          setIsAdmin(false);
+          setIsAuthLoading(false);
+          return;
+        }
+
+        let emailStr = user.email
+        let finalId = ''
+        if (emailStr === 'admin@bll.com') {
+           finalId = 'ADMIN001'
+        } else if (emailStr.endsWith('@bll.com')) {
+           finalId = emailStr.split('@')[0].toUpperCase()
+        } else {
+           finalId = emailStr
+        }
+
+        setEmployeeId(finalId)
+        
+        let isAdminUser = false
+        const normalizedId = finalId.toLowerCase()
+        try {
+          const employeeSnapshot = await get(ref(database, `employees/${normalizedId}`))
+          if (employeeSnapshot.exists()) {
+            const employeeData = employeeSnapshot.val() as { permission?: string }
+            isAdminUser = employeeData?.permission === 'admin'
+          }
+        } catch (dbError) {
+          console.error("Could not fetch user details from DB:", dbError)
+        }
+        
+        setIsAdmin(isAdminUser)
+        setIsLoggedIn(true)
+      } else {
+        setIsLoggedIn(false)
+        setIsAdmin(false)
+      }
+      setIsAuthLoading(false)
+    })
+    return () => {
+      unsubscribe();
+      if (logoutTimer) window.clearTimeout(logoutTimer);
+    }
+  }, [])
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToastMessage(message)
@@ -93,6 +172,8 @@ export default function App() {
             isAdmin: isAdminUser,
           })
             setTimeout(() => {
+              localStorage.setItem('bll_last_employee_id', finalId)
+              localStorage.setItem('bll_login_timestamp', Date.now().toString())
               setIsLoggedIn(true)
             }, 500)
         }
@@ -156,6 +237,17 @@ export default function App() {
     } finally {
       setRegisterAdminLoading(false)
     }
+  }
+
+  if (isAuthLoading) {
+    return (
+      <div className="auth-loading-screen">
+        <svg className="loading-icon-large" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+          <path d="M21 3v5h-5" />
+        </svg>
+      </div>
+    )
   }
 
   if (isLoggedIn) {

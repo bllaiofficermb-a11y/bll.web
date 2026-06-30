@@ -1,4 +1,4 @@
-import { get, push, ref, remove, set } from 'firebase/database'
+import { get, push, ref, remove, set, query, orderByChild, limitToLast, endAt, startAt } from 'firebase/database'
 import { auth, database, ensureAnonymousAuth } from './firebase'
 
 export type LoginStatus = 'success' | 'failed'
@@ -35,7 +35,29 @@ export async function recordLoginAttempt(details: {
   }
 }
 
-export async function listRecentLoginAttempts() {
-  const snapshot = await get(ref(database, 'login_attempts'))
-  return snapshot.exists() ? snapshot.val() : null
+export async function fetchLoginAttempts(options: { date?: string, lastCreatedAt?: string, limit?: number }) {
+  const limitCount = options.limit || 25;
+  const attemptsRef = ref(database, 'login_attempts');
+  
+  let q;
+  if (options.date) {
+    const startOfDay = `${options.date}T00:00:00.000Z`;
+    const endOfDay = `${options.date}T23:59:59.999Z`;
+    
+    let queryEnd = endOfDay;
+    if (options.lastCreatedAt && options.lastCreatedAt < endOfDay) {
+      queryEnd = options.lastCreatedAt;
+    }
+    
+    q = query(attemptsRef, orderByChild('createdAt'), startAt(startOfDay), endAt(queryEnd), limitToLast(limitCount));
+  } else {
+    if (options.lastCreatedAt) {
+      q = query(attemptsRef, orderByChild('createdAt'), endAt(options.lastCreatedAt), limitToLast(limitCount));
+    } else {
+      q = query(attemptsRef, orderByChild('createdAt'), limitToLast(limitCount));
+    }
+  }
+
+  const snapshot = await get(q);
+  return snapshot.exists() ? snapshot.val() : null;
 }

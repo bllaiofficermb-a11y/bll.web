@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import ProductsPage from './ProductsPage'
-import { listRecentLoginAttempts, type LoginStatus } from '../lib/loginLog'
+import { fetchLoginAttempts, type LoginStatus } from '../lib/loginLog'
 import { listRecentActivities, recordAdminActivity, type ActivityRecord, type ActivityType } from '../lib/activityLog'
-import { get, ref, remove, set } from 'firebase/database'
+import { ref, remove, set, onValue } from 'firebase/database'
 import { database, firebaseConfig } from '../lib/firebase'
 import { initializeApp, deleteApp } from 'firebase/app'
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth'
@@ -27,6 +27,7 @@ interface GuideDoc {
   category: string
   fileName: string
   fileUrl?: string
+  fileDataUrl?: string
 }
 
 interface LoginAttempt {
@@ -47,18 +48,10 @@ const PERMISSIONS = [
 ]
 const GUIDE_CATEGORIES = ['เซลส์ / การตลาด / ดีไซเนอร์ / AI', 'ซัพพอร์ต', 'Logistic', 'บัญชี']
 
-const MOCK_GUIDE_DOCS: GuideDoc[] = [
-  { id: 'guide-1', title: 'คู่มือการใช้งานระบบขายและติดตามลูกค้า', category: 'เซลส์ / การตลาด / ดีไซเนอร์ / AI', fileName: 'sales-guide.pdf' },
-  { id: 'guide-2', title: 'แนวทางการทำกราฟฟิกและอัปโหลดสื่อ', category: 'เซลส์ / การตลาด / ดีไซเนอร์ / AI', fileName: 'design-guide.pdf' },
-  { id: 'guide-3', title: 'ขั้นตอนรับแจ้งปัญหาและตอบกลับลูกค้า', category: 'ซัพพอร์ต', fileName: 'support-guide.pdf' },
-  { id: 'guide-4', title: 'การรับสินค้าและจัดส่งออเดอร์', category: 'Logistic', fileName: 'logistic-guide.pdf' },
-  { id: 'guide-5', title: 'สรุปการบันทึกบัญชีรายวัน', category: 'บัญชี', fileName: 'accounting-guide.pdf' },
-]
-
 export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boolean; currentEmployeeId?: string }) {
   const [activeView, setActiveView] = useState<'menu' | 'directory' | 'products' | 'guide' | 'login-history'>('menu')
   const [employees, setEmployees] = useState<EmployeeProfile[]>([])
-  const [guideDocs, setGuideDocs] = useState<GuideDoc[]>(MOCK_GUIDE_DOCS)
+  const [guideDocs, setGuideDocs] = useState<GuideDoc[]>([])
   const [selectedDept, setSelectedDept] = useState<string>('ทั้งหมด')
   const [selectedGuideCategory, setSelectedGuideCategory] = useState<string>(GUIDE_CATEGORIES[0])
   const [loginAttempts, setLoginAttempts] = useState<LoginAttempt[]>([])
@@ -68,6 +61,87 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
 
   // Edit, Add, Delete State
   const [editingEmp, setEditingEmp] = useState<EmployeeProfile | null>(null)
+
+  const [loginDateFilter, setLoginDateFilter] = useState(new Date().toISOString().split('T')[0])
+  const [loginHasMore, setLoginHasMore] = useState(true)
+
+  const loadLoginLogs = async (isLoadMore = false) => {
+    try {
+      setLoginHistoryLoading(true)
+      setLoginHistoryError('')
+
+      let lastCreatedAt: string | undefined;
+      if (isLoadMore && loginAttempts.length > 0) {
+        lastCreatedAt = loginAttempts[loginAttempts.length - 1].createdAt;
+      }
+
+      const [loginData, activityData] = await Promise.all([
+        fetchLoginAttempts({ 
+          date: loginDateFilter || undefined, 
+          lastCreatedAt, 
+          limit: 26 
+        }),
+        !isLoadMore ? listRecentActivities() : Promise.resolve(null)
+      ]);
+
+      if (!isLoadMore && activityData) {
+        let activities = Object.entries(activityData).map(([id, value]) => ({
+          id,
+          actor: String((value as { actor?: string }).actor ?? ''),
+          type: ((value as { type?: ActivityType }).type ?? 'guide_updated') as ActivityType,
+          subject: String((value as { subject?: string }).subject ?? ''),
+          details: String((value as { details?: string }).details ?? ''),
+          createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
+        }));
+        
+        if (loginDateFilter) {
+          activities = activities.filter(a => a.createdAt.startsWith(loginDateFilter));
+        }
+        
+        activities.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        setActivityRecords(activities);
+      }
+
+      const attempts = loginData
+        ? Object.entries(loginData).map(([id, value]) => ({
+            id,
+            employeeId: String((value as any).employeeId ?? ''),
+            status: ((value as any).status ?? 'failed') as LoginStatus,
+            reason: String((value as any).reason ?? ''),
+            isAdmin: Boolean((value as any).isAdmin ?? false),
+            createdAt: String((value as any).createdAt ?? ''),
+          }))
+        : [];
+
+      attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+      let hasMore = false;
+      if (isLoadMore) {
+         if (lastCreatedAt && attempts.length > 0 && attempts[0].createdAt === lastCreatedAt) {
+            attempts.shift();
+         }
+         hasMore = attempts.length === 25;
+      } else {
+         hasMore = attempts.length === 26;
+         if (hasMore) {
+            attempts.pop();
+         }
+      }
+
+      setLoginHasMore(hasMore);
+
+      if (isLoadMore) {
+        setLoginAttempts(prev => [...prev, ...attempts]);
+      } else {
+        setLoginAttempts(attempts);
+      }
+    } catch (error) {
+      setLoginHistoryError(error instanceof Error ? error.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล');
+    } finally {
+      setLoginHistoryLoading(false);
+    }
+  }
+
   const [isAdding, setIsAdding] = useState(false)
   const [deletingEmp, setDeletingEmp] = useState<EmployeeProfile | null>(null)
   const [editingGuide, setEditingGuide] = useState<GuideDoc | null>(null)
@@ -76,32 +150,63 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
 
   useEffect(() => {
     let mounted = true
-    get(ref(database, 'employees'))
-      .then((snapshot) => {
-        if (!mounted) return
-        const data = snapshot.exists() ? snapshot.val() : null
-        const items = data
-          ? Object.entries(data).map(([id, value]) => ({
-            id,
-            name: String((value as { name?: string }).name ?? ''),
-            department: String((value as { department?: string }).department ?? ''),
-            startDate: String((value as { startDate?: string }).startDate ?? new Date().toISOString().split('T')[0]),
-            permission: String((value as { permission?: string }).permission ?? 'user'),
-            avatarColor: String((value as { avatarColor?: string }).avatarColor ?? '#3b82f6'),
-            avatarUrl: String((value as { avatarUrl?: string }).avatarUrl ?? ''),
-            email: String((value as { email?: string }).email ?? ''),
-            password: String((value as { password?: string }).password ?? ''),
-          }))
-          : []
-        setEmployees(items)
-      })
-      .catch(() => {
-        if (!mounted) return
-        setEmployees([])
-      })
+    const employeesRef = ref(database, 'employees')
+    const unsubscribe = onValue(employeesRef, (snapshot) => {
+      if (!mounted) return
+      const data = snapshot.exists() ? snapshot.val() : null
+      const items = data
+        ? Object.entries(data).map(([id, value]) => ({
+          id,
+          name: String((value as { name?: string }).name ?? ''),
+          department: String((value as { department?: string }).department ?? ''),
+          startDate: String((value as { startDate?: string }).startDate ?? new Date().toISOString().split('T')[0]),
+          permission: String((value as { permission?: string }).permission ?? 'user'),
+          avatarColor: String((value as { avatarColor?: string }).avatarColor ?? '#3b82f6'),
+          avatarUrl: String((value as { avatarUrl?: string }).avatarUrl ?? ''),
+          email: String((value as { email?: string }).email ?? ''),
+          password: String((value as { password?: string }).password ?? ''),
+        }))
+        : []
+      setEmployees(items)
+    }, (error) => {
+      if (!mounted) return
+      console.error("Firebase realtime error on employees:", error)
+      setEmployees([])
+    })
 
     return () => {
       mounted = false
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    const guidesRef = ref(database, 'guides')
+    const unsubscribe = onValue(guidesRef, (snapshot) => {
+      if (!mounted) return
+      const data = snapshot.exists() ? snapshot.val() : null
+      const items = data
+        ? Object.entries(data).map(([id, value]) => ({
+          id,
+          title: String((value as { title?: string }).title ?? ''),
+          category: String((value as { category?: string }).category ?? GUIDE_CATEGORIES[0]),
+          fileName: String((value as { fileName?: string }).fileName ?? ''),
+          fileUrl: String((value as { fileUrl?: string }).fileUrl ?? ''),
+          fileDataUrl: String((value as { fileDataUrl?: string }).fileDataUrl ?? ''),
+        }))
+        : []
+
+      setGuideDocs(items)
+    }, (error) => {
+      if (!mounted) return
+      console.error('Firebase realtime error on guides:', error)
+      setGuideDocs([])
+    })
+
+    return () => {
+      mounted = false
+      unsubscribe()
     }
   }, [])
 
@@ -109,53 +214,16 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
     if (activeView !== 'login-history') return
 
     let isMounted = true
-    setLoginHistoryLoading(true)
-    setLoginHistoryError('')
-
-    Promise.all([listRecentLoginAttempts(), listRecentActivities()])
-      .then(([loginData, activityData]) => {
-        if (!isMounted) return
-        const attempts = loginData
-          ? Object.entries(loginData).map(([id, value]) => ({
-            id,
-            employeeId: String((value as { employeeId?: string }).employeeId ?? ''),
-            status: ((value as { status?: LoginStatus }).status ?? 'failed') as LoginStatus,
-            reason: String((value as { reason?: string }).reason ?? ''),
-            isAdmin: Boolean((value as { isAdmin?: boolean }).isAdmin),
-            createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
-          }))
-          : []
-
-        attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        setLoginAttempts(attempts)
-
-        const activities = activityData
-          ? Object.entries(activityData).map(([id, value]) => ({
-            id,
-            actor: String((value as { actor?: string }).actor ?? ''),
-            type: ((value as { type?: ActivityType }).type ?? 'guide_updated') as ActivityType,
-            subject: String((value as { subject?: string }).subject ?? ''),
-            details: String((value as { details?: string }).details ?? ''),
-            createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
-          }))
-          : []
-        activities.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        setActivityRecords(activities)
-        setLoginHistoryError('')
-      })
-      .catch((error) => {
-        if (!isMounted) return
-        setLoginHistoryError(error instanceof Error ? error.message : 'โหลดประวัติ login ไม่สำเร็จ')
-      })
+    loadLoginLogs(false)
       .finally(() => {
-        if (isMounted) {
-          setLoginHistoryLoading(false)
-        }
+        if (!isMounted) return
+        setLoginHistoryLoading(false)
       })
 
     return () => {
       isMounted = false
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView])
 
   const openAddModal = () => {
@@ -252,12 +320,7 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
       fileName: editingGuide.fileName.trim() || 'guide-file.pdf'
     }
 
-    setGuideDocs(prev => {
-      if (isAddingGuide) {
-        return [...prev, finalDoc]
-      }
-      return prev.map(doc => doc.id === finalDoc.id ? finalDoc : doc)
-    })
+    await set(ref(database, `guides/${finalDoc.id}`), finalDoc)
 
     if (isAdmin) {
       await recordAdminActivity({
@@ -274,18 +337,24 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
 
   const handleGuideFileUpload = (file: File | null) => {
     if (!file || !editingGuide) return
-    const fileUrl = URL.createObjectURL(file)
-    setEditingGuide({
-      ...editingGuide,
-      fileUrl,
-      fileName: file.name
-    })
+    const reader = new FileReader()
+    reader.onload = () => {
+      setEditingGuide({
+        ...editingGuide,
+        fileUrl: '',
+        fileDataUrl: String(reader.result ?? ''),
+        fileName: file.name
+      })
+    }
+    reader.readAsDataURL(file)
   }
 
   const downloadGuide = (doc: GuideDoc) => {
-    if (doc.fileUrl) {
+    const downloadableUrl = doc.fileDataUrl || doc.fileUrl
+
+    if (downloadableUrl) {
       const link = document.createElement('a')
-      link.href = doc.fileUrl
+      link.href = downloadableUrl
       link.download = doc.fileName || `${doc.title}.pdf`
       link.click()
       return
@@ -326,33 +395,32 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
           </div>
 
           <div className="login-history-toolbar">
+            <div className="date-filter-wrapper">
+              <span className="date-filter-label">เลือกวันที่:</span>
+              <input 
+                type="date" 
+                className="date-filter-input" 
+                value={loginDateFilter}
+                onChange={(e) => setLoginDateFilter(e.target.value)}
+              />
+              <button className="date-filter-btn" onClick={() => loadLoginLogs(false)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                ค้นหา
+              </button>
+            </div>
+            
             <button
               type="button"
-              className="guide-download-btn"
-              onClick={() => {
-                setLoginHistoryLoading(true)
-                setLoginHistoryError('')
-                listRecentLoginAttempts()
-                  .then((data) => {
-                    const attempts = data
-                      ? Object.entries(data).map(([id, value]) => ({
-                        id,
-                        employeeId: String((value as { employeeId?: string }).employeeId ?? ''),
-                        status: ((value as { status?: LoginStatus }).status ?? 'failed') as LoginStatus,
-                        reason: String((value as { reason?: string }).reason ?? ''),
-                        createdAt: String((value as { createdAt?: string }).createdAt ?? ''),
-                      }))
-                      : []
-
-                    attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-                    setLoginAttempts(attempts)
-                  })
-                  .catch((error) => {
-                    setLoginHistoryError(error instanceof Error ? error.message : 'โหลดประวัติ login ไม่สำเร็จ')
-                  })
-                  .finally(() => setLoginHistoryLoading(false))
-              }}
+              className="date-filter-refresh"
+              onClick={() => loadLoginLogs(false)}
             >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              </svg>
               รีเฟรช
             </button>
           </div>
@@ -382,6 +450,14 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
                   </article>
                 ))
               )}
+            </div>
+          )}
+          
+          {loginHasMore && !loginHistoryLoading && (
+            <div style={{ textAlign: 'center', marginTop: '16px' }}>
+              <button className="guide-download-btn" onClick={() => loadLoginLogs(true)}>
+                โหลดเพิ่มเติม
+              </button>
             </div>
           )}
 
@@ -798,7 +874,7 @@ export default function MainPage({ isAdmin, currentEmployeeId }: { isAdmin?: boo
                   className="save-btn"
                   style={{ background: '#ef4444' }}
                   onClick={async () => {
-                    setGuideDocs(prev => prev.filter(item => item.id !== deletingGuide.id))
+                    await remove(ref(database, `guides/${deletingGuide.id}`))
                     if (isAdmin) {
                       await recordAdminActivity({
                         actor: currentEmployeeId || 'ADMIN',
