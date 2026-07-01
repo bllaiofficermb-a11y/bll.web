@@ -1,5 +1,5 @@
 import { get, push, ref, remove, set } from 'firebase/database'
-import { auth, database, ensureAnonymousAuth } from './firebase'
+import { auth, database } from './firebase'
 
 export type ActivityType =
   | 'employee_created'
@@ -34,7 +34,7 @@ export interface ActivityRecord {
 
 export async function recordAdminActivity(input: Omit<ActivityRecord, 'id' | 'createdAt'>) {
   if (!auth.currentUser) {
-    await ensureAnonymousAuth()
+    throw new Error('ต้องเข้าสู่ระบบก่อนบันทึกประวัติการแก้ไข')
   }
 
   const activitiesRef = ref(database, 'admin_activities')

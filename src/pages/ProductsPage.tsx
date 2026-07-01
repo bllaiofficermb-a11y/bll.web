@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { ref, remove, set, onValue } from 'firebase/database'
 import { database } from '../lib/firebase'
+import { recordAdminActivity, type ActivityType } from '../lib/activityLog'
 
 export interface Product {
   id: string
@@ -36,13 +37,25 @@ const IMAGE_ZOOM_MAX = 4
 const IMAGE_ZOOM_STEP = 0.25
 const IMAGE_ZOOM_WHEEL_STEP = 0.1
 const IMAGE_ZOOM_WHEEL_DELAY = 80
+const MAX_PRODUCT_IMAGE_BYTES = 1.5 * 1024 * 1024
+
+const isBlobUrl = (url?: string) => Boolean(url && url.startsWith('blob:'))
+const getSafeImageUrl = (url?: string) => (url && !isBlobUrl(url) ? url : '')
+
+const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(String(reader.result || ''))
+  reader.onerror = () => reject(reader.error || new Error('ไม่สามารถอ่านไฟล์รูปภาพได้'))
+  reader.readAsDataURL(file)
+})
 
 interface ProductsPageProps {
   isAdmin?: boolean
+  currentEmployeeId?: string
   onBack: () => void
 }
 
-export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
+export default function ProductsPage({ isAdmin, currentEmployeeId, onBack }: ProductsPageProps) {
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('ทั้งหมด')
   const [selectedCordLength, setSelectedCordLength] = useState('ทั้งหมด')
@@ -55,6 +68,21 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
   const [zoomingProduct, setZoomingProduct] = useState<Product | null>(null)
   const [imageZoomScale, setImageZoomScale] = useState(1)
   const wheelZoomLockRef = useRef(false)
+
+  const recordProductActivity = async (type: ActivityType, subject: string, details: string) => {
+    if (!isAdmin) return
+
+    try {
+      await recordAdminActivity({
+        actor: currentEmployeeId || 'ADMIN',
+        type,
+        subject,
+        details,
+      })
+    } catch (error) {
+      console.error('Unable to record product admin activity', error)
+    }
+  }
 
   const zoomImageIn = () => {
     setImageZoomScale(prev => Math.min(IMAGE_ZOOM_MAX, Number((prev + IMAGE_ZOOM_STEP).toFixed(2))))
@@ -140,7 +168,7 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
       if (!mounted) return
       if (snapshot.exists()) {
         const data = snapshot.val() as Record<string, Product>
-        setProducts(Object.values(data))
+        setProducts(Object.values(data).map(product => ({ ...product, imageUrl: getSafeImageUrl(product.imageUrl) })))
       } else {
         setProducts([])
       }
@@ -215,10 +243,26 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
     setIsAddingProduct(false)
   }
 
-  const handleProductImageUpload = (file: File | null) => {
+  const handleProductImageUpload = async (file: File | null) => {
     if (!file || !editingProduct) return
-    const imageUrl = URL.createObjectURL(file)
-    setEditingProduct({ ...editingProduct, imageUrl })
+
+    if (!file.type.startsWith('image/')) {
+      alert('กรุณาเลือกไฟล์รูปภาพเท่านั้น')
+      return
+    }
+
+    if (file.size > MAX_PRODUCT_IMAGE_BYTES) {
+      alert('รูปภาพใหญ่เกินไป กรุณาย่อรูปให้ไม่เกิน 1.5MB ก่อนอัปโหลด')
+      return
+    }
+
+    try {
+      const imageUrl = await readFileAsDataUrl(file)
+      setEditingProduct(prev => prev ? { ...prev, imageUrl } : prev)
+    } catch (error) {
+      console.error('Error reading product image:', error)
+      alert('ไม่สามารถอ่านไฟล์รูปภาพได้')
+    }
   }
 
   const normalizeProduct = (product: Product): Product => ({
@@ -235,7 +279,8 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
     barcode: product.barcode.trim(),
     cartonSize: product.cartonSize.trim() || '-',
     imageEmoji: product.imageEmoji.trim() || '📦',
-    imageColor: product.imageColor.trim() || '#f8fafc'
+    imageColor: product.imageColor.trim() || '#f8fafc',
+    imageUrl: getSafeImageUrl(product.imageUrl)
   })
 
   const handleSave = async (e: React.FormEvent) => {
@@ -251,6 +296,11 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
       } else {
         setProducts(prev => prev.map(p => p.id === finalProduct.id ? finalProduct : p))
       }
+      await recordProductActivity(
+        isAddingProduct ? 'product_created' : 'product_updated',
+        `${finalProduct.sku} - ${finalProduct.name}`,
+        `${isAddingProduct ? 'เพิ่ม' : 'แก้ไข'}ข้อมูลสินค้า | หมวด: ${finalProduct.category} | กำลังไฟ: ${finalProduct.wattage}W`
+      )
       closeProductModal()
     } catch (error) {
       console.error("Error saving product:", error)
@@ -263,6 +313,11 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
     try {
       await remove(ref(database, `products/${deletingProduct.id}`))
       setProducts(prev => prev.filter(p => p.id !== deletingProduct.id))
+      await recordProductActivity(
+        'product_deleted',
+        `${deletingProduct.sku} - ${deletingProduct.name}`,
+        `ลบสินค้าออกจากระบบ | หมวด: ${deletingProduct.category}`
+      )
       setDeletingProduct(null)
     } catch (error) {
       console.error("Error deleting product:", error)
@@ -371,8 +426,8 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
                   onClick={() => openImageZoom(product)}
                   title="คลิกเพื่อดูรูปสินค้าแบบขยาย"
                 >
-                  {product.imageUrl ? (
-                    <img src={product.imageUrl} alt={product.name} className="product-image-preview" />
+                  {getSafeImageUrl(product.imageUrl) ? (
+                    <img src={getSafeImageUrl(product.imageUrl)} alt={product.name} className="product-image-preview" />
                   ) : (
                     <span className="product-emoji">{product.imageEmoji}</span>
                   )}
@@ -513,8 +568,8 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
             <form onSubmit={handleSave} className="modal-body product-edit-body">
               <div className="product-modal-image-section">
                 <div className="product-form-image-preview" style={{ background: editingProduct.imageColor }}>
-                  {editingProduct.imageUrl ? (
-                    <img src={editingProduct.imageUrl} alt={editingProduct.name || 'รูปสินค้า'} />
+                  {getSafeImageUrl(editingProduct.imageUrl) ? (
+                    <img src={getSafeImageUrl(editingProduct.imageUrl)} alt={editingProduct.name || 'รูปสินค้า'} />
                   ) : (
                     <span>{editingProduct.imageEmoji || '📦'}</span>
                   )}
@@ -662,8 +717,8 @@ export default function ProductsPage({ isAdmin, onBack }: ProductsPageProps) {
                   className="product-image-zoom-media"
                   style={{ transform: `scale(${imageZoomScale})` }}
                 >
-                  {zoomingProduct.imageUrl ? (
-                    <img src={zoomingProduct.imageUrl} alt={zoomingProduct.name} />
+                  {getSafeImageUrl(zoomingProduct.imageUrl) ? (
+                    <img src={getSafeImageUrl(zoomingProduct.imageUrl)} alt={zoomingProduct.name} />
                   ) : (
                     <span>{zoomingProduct.imageEmoji}</span>
                   )}

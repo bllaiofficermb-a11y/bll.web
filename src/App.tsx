@@ -8,8 +8,80 @@ import { toAuthPassword } from './lib/seedAdmin'
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth'
 import { get, ref, set } from 'firebase/database'
 import { auth, database } from './lib/firebase'
+import { readAuthUserProfile, syncAuthUserProfile } from './lib/authUsers'
+import {
+  canLoginWithStatus,
+  canViewMap,
+  defaultAccessLevelForRole,
+  isAdminRole,
+  normalizeAccessLevel,
+  normalizeRole,
+  normalizeStatus,
+  type CurrentUserAccess,
+} from './lib/accessControl'
 
-const departmentOptions = ['ฝ่ายขาย', 'บัญชี', 'HR', 'พนักงานคลัง', 'การตลาด', 'กราฟฟิก', 'IT & AI']
+const departmentOptions = ['บริหาร', 'บัญชีและการเงิน', 'กราฟฟิก', 'IT&AI', 'การตลาด', 'ขนส่ง', 'สต๊อก', 'โมเดิร์นเทรด', 'ดีลเลอร์', 'บุคคล']
+
+const getEmployeePathCandidates = (employeeId: string) => {
+  const trimmed = employeeId.trim()
+  return Array.from(new Set([
+    trimmed.toLowerCase(),
+    trimmed,
+    trimmed.toUpperCase(),
+  ].filter(Boolean)))
+}
+
+const loadEmployeeAccessProfile = async (employeeId: string): Promise<CurrentUserAccess | null> => {
+  for (const candidate of getEmployeePathCandidates(employeeId)) {
+    const snapshot = await get(ref(database, `employees/${candidate}`))
+    if (!snapshot.exists()) continue
+
+    const value = snapshot.val() as Record<string, unknown>
+    const role = normalizeRole(value.role, value.permission)
+    const status = normalizeStatus(value.status, role)
+    const accessLevel = normalizeAccessLevel(value.accessLevel, role)
+
+    return {
+      // Keep this value aligned with the Realtime Database key.
+      // Security rules use it to verify that the signed-in Firebase Auth UID
+      // belongs to the same employee record before bootstrapping authUsers.
+      employeeId: candidate,
+      name: String(value.name ?? ''),
+      department: String(value.department ?? ''),
+      role,
+      status,
+      accessLevel,
+    }
+  }
+
+  return null
+}
+
+const loadCurrentAccessProfile = async (uid: string, employeeIdFallback: string): Promise<CurrentUserAccess | null> => {
+  try {
+    const authUserProfile = await readAuthUserProfile(uid)
+    if (authUserProfile) return authUserProfile
+  } catch (error) {
+    console.warn('Unable to read authUsers profile. Falling back to employees profile:', error)
+  }
+
+  const employeeProfile = await loadEmployeeAccessProfile(employeeIdFallback)
+
+  if (employeeProfile) {
+    void syncAuthUserProfile(uid, {
+      id: employeeProfile.employeeId,
+      name: employeeProfile.name,
+      department: employeeProfile.department,
+      role: employeeProfile.role,
+      status: employeeProfile.status,
+      accessLevel: employeeProfile.accessLevel,
+    }).catch((error) => {
+      console.warn('Unable to bootstrap authUsers profile:', error)
+    })
+  }
+
+  return employeeProfile
+}
 
 export default function App() {
   const savedEmpId = localStorage.getItem('bll_last_employee_id')
@@ -23,12 +95,13 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(!!savedEmpId)
   const [isAuthLoading, setIsAuthLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
+  const [currentUser, setCurrentUser] = useState<CurrentUserAccess | null>(null)
   const [isRegisterAdminOpen, setIsRegisterAdminOpen] = useState(false)
   const [registerAdminLoading, setRegisterAdminLoading] = useState(false)
   const [registerAdminError, setRegisterAdminError] = useState('')
   const [registerAdminForm, setRegisterAdminForm] = useState({
     name: '',
-    department: 'IT & AI',
+    department: 'IT&AI',
     startDate: new Date().toISOString().split('T')[0],
     employeeId: '',
     email: '',
@@ -83,6 +156,7 @@ export default function App() {
           void signOut(auth);
           setIsLoggedIn(false);
           setIsAdmin(false);
+          setCurrentUser(null);
           setIsAuthLoading(false);
           return;
         }
@@ -98,24 +172,34 @@ export default function App() {
         }
 
         setEmployeeId(finalId)
-        
-        let isAdminUser = false
-        const normalizedId = finalId.toLowerCase()
+
         try {
-          const employeeSnapshot = await get(ref(database, `employees/${normalizedId}`))
-          if (employeeSnapshot.exists()) {
-            const employeeData = employeeSnapshot.val() as { permission?: string }
-            isAdminUser = employeeData?.permission === 'admin'
+          const accessProfile = await loadCurrentAccessProfile(user.uid, finalId)
+
+          if (!accessProfile || !canLoginWithStatus(accessProfile.status)) {
+            await signOut(auth)
+            setIsLoggedIn(false)
+            setIsAdmin(false)
+            setCurrentUser(null)
+            setIsAuthLoading(false)
+            return
           }
+
+          setEmployeeId(accessProfile.employeeId)
+          setCurrentUser(accessProfile)
+          setIsAdmin(isAdminRole(accessProfile.role))
+          setIsLoggedIn(true)
         } catch (dbError) {
           console.error("Could not fetch user details from DB:", dbError)
+          await signOut(auth)
+          setIsLoggedIn(false)
+          setIsAdmin(false)
+          setCurrentUser(null)
         }
-        
-        setIsAdmin(isAdminUser)
-        setIsLoggedIn(true)
       } else {
         setIsLoggedIn(false)
         setIsAdmin(false)
+        setCurrentUser(null)
       }
       setIsAuthLoading(false)
     })
@@ -152,27 +236,35 @@ export default function App() {
         const userCredential = await signInWithEmailAndPassword(auth, loginEmail, loginPassword)
 
         if (userCredential.user) {
-          // After successful auth, we have permission to read the DB
-          let isAdminUser = false
-          try {
-            const employeeSnapshot = await get(ref(database, `employees/${normalizedId}`))
-            if (employeeSnapshot.exists()) {
-              const employeeData = employeeSnapshot.val() as { permission?: string }
-              isAdminUser = employeeData?.permission === 'admin'
-            }
-          } catch (dbError) {
-            console.error("Could not fetch user details from DB:", dbError)
+          const accessProfile = await loadCurrentAccessProfile(userCredential.user.uid, finalId)
+
+          if (!accessProfile) {
+            await signOut(auth)
+            throw new Error('ไม่พบข้อมูลพนักงานในระบบ')
           }
 
+          if (!canLoginWithStatus(accessProfile.status)) {
+            await signOut(auth)
+            throw new Error('บัญชีนี้ถูกปิดสิทธิ์แล้ว')
+          }
+
+          const isAdminUser = isAdminRole(accessProfile.role)
+
+          setEmployeeId(accessProfile.employeeId)
+          setCurrentUser(accessProfile)
           setIsAdmin(isAdminUser)
           showToast('เข้าสู่ระบบสำเร็จ', 'success')
           void recordLoginAttempt({
-            employeeId: finalId,
+            employeeId: accessProfile.employeeId,
             status: 'success',
             isAdmin: isAdminUser,
+            role: accessProfile.role,
+            employeeStatus: accessProfile.status,
+            accessLevel: accessProfile.accessLevel,
+            department: accessProfile.department,
           })
             setTimeout(() => {
-              localStorage.setItem('bll_last_employee_id', finalId)
+              localStorage.setItem('bll_last_employee_id', accessProfile.employeeId)
               localStorage.setItem('bll_login_timestamp', Date.now().toString())
               setIsLoggedIn(true)
             }, 500)
@@ -180,8 +272,9 @@ export default function App() {
       } catch (error) {
         console.error("Login error:", error)
         setIsAdmin(false)
+        setCurrentUser(null)
         showToast('เข้าสู่ระบบไม่สำเร็จ', 'error')
-        setErrorMessage('ไม่สามารถตรวจสอบข้อมูลล็อกอินได้')
+        setErrorMessage(error instanceof Error ? error.message : 'ไม่สามารถตรวจสอบข้อมูลล็อกอินได้')
       } finally {
         setIsLoading(false)
       }
@@ -207,24 +300,30 @@ export default function App() {
         toAuthPassword(registerAdminForm.password),
       )
 
-      await set(ref(database, `employees/${normalizedId}`), {
+      const adminEmployee = {
         id: normalizedId,
         name: registerAdminForm.name.trim() || normalizedId.toUpperCase(),
         department: registerAdminForm.department,
         startDate: registerAdminForm.startDate,
         permission: 'admin',
+        role: 'admin' as const,
+        status: 'active' as const,
+        accessLevel: defaultAccessLevelForRole('admin'),
         avatarColor: '#14b8a6',
         email,
         password: registerAdminForm.password,
         authUid: userCredential.user.uid,
         createdAt: new Date().toISOString(),
-      })
+      }
+
+      await set(ref(database, `employees/${normalizedId}`), adminEmployee)
+      await syncAuthUserProfile(userCredential.user.uid, adminEmployee)
 
       await signOut(auth)
       setIsRegisterAdminOpen(false)
       setRegisterAdminForm({
         name: '',
-        department: 'IT & AI',
+        department: 'IT&AI',
         startDate: new Date().toISOString().split('T')[0],
         employeeId: '',
         email: '',
@@ -265,12 +364,14 @@ export default function App() {
             >
               หน้าหลัก
             </button>
-            <button
-              className={`menu-btn ${activeTab === 'map' ? 'active' : ''}`}
-              onClick={() => setActiveTab('map')}
-            >
-              แผนที่แยกจังหวัด
-            </button>
+            {canViewMap(currentUser) && (
+              <button
+                className={`menu-btn ${activeTab === 'map' ? 'active' : ''}`}
+                onClick={() => setActiveTab('map')}
+              >
+                แผนที่แยกจังหวัด
+              </button>
+            )}
           </nav>
 
           <div className="navbar-user-actions">
@@ -292,6 +393,7 @@ export default function App() {
                 setSuccessMessage('')
                 setEmployeeId('')
                 setPassword('')
+                setCurrentUser(null)
               }}
               className="navbar-logout-btn"
             >
@@ -300,7 +402,11 @@ export default function App() {
           </div>
         </header>
 
-        {activeTab === 'home' ? <MainPage isAdmin={isAdmin} currentEmployeeId={employeeId} /> : <MapPage isAdmin={isAdmin} />}
+        {activeTab === 'home' || !canViewMap(currentUser) ? (
+          <MainPage isAdmin={isAdmin} currentEmployeeId={employeeId} currentUser={currentUser} />
+        ) : (
+          <MapPage isAdmin={isAdmin} currentEmployeeId={employeeId} />
+        )}
       </div>
     )
   }

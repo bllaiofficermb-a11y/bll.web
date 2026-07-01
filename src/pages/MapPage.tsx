@@ -507,7 +507,8 @@ export default function MapPage({ isAdmin = false, currentEmployeeId }: { isAdmi
   const [newRepPhone, setNewRepPhone] = useState('')
 
   // Pointer position state & dragging logic
-  const [pointers, setPointers] = useState<MapPointer[]>(DEFAULT_POINTERS)
+  const [pointers, setPointers] = useState<MapPointer[]>([])
+  const [isPointerDataReady, setIsPointerDataReady] = useState(false)
   const [isPanning, setIsPanning] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
@@ -617,6 +618,7 @@ export default function MapPage({ isAdmin = false, currentEmployeeId }: { isAdmi
     const pointersUnsubscribe = onValue(ref(database, MAP_POINTERS_PATH), (snapshot) => {
       const data = snapshot.val() as Record<string, MapPointer> | null
       setPointers(data ? Object.values(data) : [])
+      setIsPointerDataReady(true)
     })
 
     const pointsUnsubscribe = onValue(ref(database, MAP_SHOP_POINTS_PATH), (snapshot) => {
@@ -2181,6 +2183,29 @@ export default function MapPage({ isAdmin = false, currentEmployeeId }: { isAdmi
                     transition: isPanning || draggingPointId || draggingPointerRep ? 'none' : 'transform 0.15s ease-out'
                   }}
                 >
+                  {!isPointerDataReady && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '50%',
+                        top: '18px',
+                        transform: 'translateX(-50%)',
+                        zIndex: 30,
+                        padding: '0.45rem 0.8rem',
+                        borderRadius: '999px',
+                        background: 'rgba(255, 255, 255, 0.96)',
+                        border: '1px solid #e2e8f0',
+                        boxShadow: '0 10px 24px rgba(15, 23, 42, 0.10)',
+                        color: '#64748b',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        pointerEvents: 'none'
+                      }}
+                    >
+                      กำลังโหลดตำแหน่งล่าสุด...
+                    </div>
+                  )}
+
                   <svg viewBox="0 0 560 1025" className="thailand-detailed-svg">
                     {THAILAND_PATHS.map((prov: any) => {
                       const details = provinces[prov.id]
@@ -2211,7 +2236,7 @@ export default function MapPage({ isAdmin = false, currentEmployeeId }: { isAdmi
 
 
 
-                    {salesReps.map((rep) => {
+                    {isPointerDataReady && salesReps.map((rep) => {
                       const pointer = pointers.find(p => p.repName === rep.name)
                       if (!pointer) return null
                       const anchor = getRepCentroid(rep.name)
@@ -2343,7 +2368,7 @@ export default function MapPage({ isAdmin = false, currentEmployeeId }: { isAdmi
                     })}
                   </svg>
 
-                  {salesReps.map((rep) => {
+                  {isPointerDataReady && salesReps.map((rep) => {
                     const pointer = pointers.find(p => p.repName === rep.name)
                     if (!pointer) return null
                     const opacity = selectedSale ? (selectedSale === rep.name ? 1 : 0.15) : 1

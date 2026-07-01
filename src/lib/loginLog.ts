@@ -1,5 +1,6 @@
 import { get, push, ref, remove, set, query, orderByChild, limitToLast, endAt, startAt } from 'firebase/database'
 import { auth, database, ensureAnonymousAuth } from './firebase'
+import type { AccessLevel, EmployeeRole, EmployeeStatus } from './accessControl'
 
 export type LoginStatus = 'success' | 'failed'
 
@@ -8,6 +9,10 @@ export async function recordLoginAttempt(details: {
   status: LoginStatus
   reason?: string
   isAdmin?: boolean
+  role?: EmployeeRole
+  employeeStatus?: EmployeeStatus
+  accessLevel?: AccessLevel
+  department?: string
 }) {
   if (!auth.currentUser) {
     await ensureAnonymousAuth()
@@ -21,6 +26,10 @@ export async function recordLoginAttempt(details: {
     status: details.status,
     reason: details.reason ?? '',
     isAdmin: details.isAdmin ?? false,
+    role: details.role ?? '',
+    employeeStatus: details.employeeStatus ?? '',
+    accessLevel: details.accessLevel ?? '',
+    department: details.department ?? '',
     createdAt: new Date().toISOString(),
   }
 

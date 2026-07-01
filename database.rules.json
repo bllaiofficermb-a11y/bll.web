@@ -1,0 +1,101 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "authUsers": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('authUsers').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && (root.child('authUsers').child(auth.uid).child('role').val() === 'admin' || (auth.uid === $uid && newData.child('uid').val() === $uid && root.child('employees').child(newData.child('employeeId').val()).child('authUid').val() === $uid && (newData.child('role').val() === root.child('employees').child(newData.child('employeeId').val()).child('role').val() || newData.child('role').val() === root.child('employees').child(newData.child('employeeId').val()).child('permission').val()) && (!root.child('employees').child(newData.child('employeeId').val()).child('status').exists() || newData.child('status').val() === root.child('employees').child(newData.child('employeeId').val()).child('status').val()) && (!root.child('employees').child(newData.child('employeeId').val()).child('accessLevel').exists() || newData.child('accessLevel').val() === root.child('employees').child(newData.child('employeeId').val()).child('accessLevel').val())))",
+        ".validate": "newData.hasChildren(['uid', 'employeeId', 'role', 'status', 'accessLevel']) && newData.child('uid').isString() && newData.child('employeeId').isString() && newData.child('role').isString() && newData.child('status').isString() && newData.child('accessLevel').isString()"
+      }
+    },
+    "employees": {
+      ".indexOn": ["department", "role", "status", "authUid"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+      "$employeeId": {
+        ".read": "auth != null && (root.child('authUsers').child(auth.uid).child('role').val() === 'admin' || data.child('authUid').val() === auth.uid || (root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && (root.child('authUsers').child(auth.uid).child('employeeId').val() === $employeeId || (root.child('authUsers').child(auth.uid).child('role').val() === 'manager' && root.child('authUsers').child(auth.uid).child('department').val() === data.child('department').val()))))",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "guides": {
+      ".indexOn": ["category", "accessLevel", "department"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned'",
+      "$guideId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && (root.child('authUsers').child(auth.uid).child('role').val() === 'admin' || !data.child('accessLevel').exists() || data.child('accessLevel').val() === 'public' || (data.child('accessLevel').val() === 'department' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation' && (!data.child('department').exists() || data.child('department').val() === '' || data.child('department').val() === root.child('authUsers').child(auth.uid).child('department').val())) || (data.child('accessLevel').val() === 'confidential' && root.child('authUsers').child(auth.uid).child('role').val() === 'manager' && data.child('department').val() === root.child('authUsers').child(auth.uid).child('department').val()))",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "products": {
+      ".indexOn": ["department", "accessLevel"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      "$productId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "map_sales_reps": {
+      ".indexOn": ["department"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      "$repId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "map_provinces": {
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      "$provinceId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "map_shop_points": {
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      "$shopId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "map_points": {
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      "$pointId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "map_pointers": {
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      "$pointerId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "map_seeded": {
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned' && root.child('authUsers').child(auth.uid).child('role').val() !== 'probation'",
+      ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+    },
+    "login_attempts": {
+      ".indexOn": ["createdAt", "employeeId"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+      "$attemptId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+        ".write": "auth != null"
+      }
+    },
+    "admin_activities": {
+      ".indexOn": ["createdAt", "actor", "type"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+      "$activityId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'"
+      }
+    },
+    "access_logs": {
+      ".indexOn": ["createdAt", "actor", "resourceType"],
+      ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+      "$logId": {
+        ".read": "auth != null && root.child('authUsers').child(auth.uid).child('role').val() === 'admin'",
+        ".write": "auth != null && root.child('authUsers').child(auth.uid).child('status').val() !== 'resigned'"
+      }
+    }
+  }
+}
