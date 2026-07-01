@@ -15,6 +15,9 @@ dist-ssr
 .env.*
 !.env.example
 !.env.*.example
+mainpage_logs.txt
+*.log
+.DS_Store
 
 # One-off local migration/restore scripts
 modify.js
