@@ -5,15 +5,25 @@ import { getStorage } from 'firebase/storage'
 import { getFirestore } from 'firebase/firestore'
 import { getDatabase } from 'firebase/database'
 
+const getEnv = (key: string) => {
+  const value = import.meta.env[key]
+
+  if (!value) {
+    throw new Error(`Missing environment variable: ${key}`)
+  }
+
+  return value
+}
+
 export const firebaseConfig = {
-  apiKey: 'AIzaSyC4KxtsTF_-TCcofYQkbZhf5GV7NHNtZhQ',
-  authDomain: 'bll-web.firebaseapp.com',
-  projectId: 'bll-web',
-  databaseURL: 'https://bll-web-default-rtdb.asia-southeast1.firebasedatabase.app',
-  storageBucket: 'bll-web.firebasestorage.app',
-  messagingSenderId: '679481055440',
-  appId: '1:679481055440:web:c433025924f5f6ecb3a6d5',
-  measurementId: 'G-6BRC33WDG8',
+  apiKey: getEnv('VITE_FIREBASE_API_KEY'),
+  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: getEnv('VITE_FIREBASE_PROJECT_ID'),
+  databaseURL: getEnv('VITE_FIREBASE_DATABASE_URL'),
+  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: getEnv('VITE_FIREBASE_APP_ID'),
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || undefined,
 }
 
 const otherProjectFirebaseConfig = {
@@ -26,18 +36,17 @@ const otherProjectFirebaseConfig = {
   measurementId: '',
 }
 
-const firebaseDatabaseUrl = 'https://bll-web-default-rtdb.asia-southeast1.firebasedatabase.app'
+const firebaseDatabaseUrl = firebaseConfig.databaseURL
 
 declare global {
-  // eslint-disable-next-line no-var
   var __bllFirebaseApp: ReturnType<typeof initializeApp> | undefined
 }
 
 export const app =
-  globalThis.__bllFirebaseApp ?? (globalThis.__bllFirebaseApp = getApps().length ? getApp() : initializeApp({
-    ...firebaseConfig,
-    databaseURL: firebaseDatabaseUrl,
-  }))
+  globalThis.__bllFirebaseApp ??
+  (globalThis.__bllFirebaseApp = getApps().length
+    ? getApp()
+    : initializeApp(firebaseConfig))
 
 export const otherProject =
   otherProjectFirebaseConfig.apiKey && otherProjectFirebaseConfig.appId
