@@ -1,6 +1,5 @@
 import { getApp, getApps, initializeApp } from 'firebase/app'
-import { getAnalytics, isSupported, type Analytics } from 'firebase/analytics'
-import { getAuth, signInAnonymously } from 'firebase/auth'
+import { getAuth } from 'firebase/auth'
 import { getStorage } from 'firebase/storage'
 import { getFirestore } from 'firebase/firestore'
 import { getDatabase } from 'firebase/database'
@@ -39,6 +38,7 @@ const otherProjectFirebaseConfig = {
 const firebaseDatabaseUrl = firebaseConfig.databaseURL
 
 declare global {
+  // eslint-disable-next-line no-var
   var __bllFirebaseApp: ReturnType<typeof initializeApp> | undefined
 }
 
@@ -53,18 +53,13 @@ export const otherProject =
     ? initializeApp(otherProjectFirebaseConfig, 'other')
     : null
 
-export const defaultStorage = getStorage()
-export const defaultFirestore = getFirestore()
+export const defaultStorage = getStorage(app)
+export const defaultFirestore = getFirestore(app)
 export const database = getDatabase(app, firebaseDatabaseUrl)
 export const auth = getAuth(app)
-export const ensureAnonymousAuth = () => signInAnonymously(auth)
 
 export const otherStorage = otherProject ? getStorage(otherProject) : null
 export const otherFirestore = otherProject ? getFirestore(otherProject) : null
 export const otherDatabase = otherProject ? getDatabase(otherProject) : null
 
 export const getDefaultAppName = () => getApp().name
-
-export const analyticsPromise: Promise<Analytics | null> = isSupported()
-  .then((supported) => (supported ? getAnalytics(app) : null))
-  .catch(() => null)
